@@ -1,0 +1,45 @@
+{
+  "name": "pi-heimdall",
+  "version": "0.1.0",
+  "description": "Guardian extensions for pi — blocks accidental secret exposure from bash, read, sops, and kubectl tool calls",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "security",
+    "secrets",
+    "sops",
+    "kubectl"
+  ],
+  "license": "MIT",
+  "author": "casualjim",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/casualjim/pi-heimdall"
+  },
+  "type": "module",
+  "files": [
+    "extensions/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "check:pack": "npm pack --dry-run"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.4.0"
+  }
+}
