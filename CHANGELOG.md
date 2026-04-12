@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/casualjim/pi-heimdall/compare/pi-heimdall-v0.1.1...pi-heimdall-v0.1.2) (2026-04-12)
+
+
+### Bug Fixes
+
+* disable release-please labeling to avoid PR node errors ([f528126](https://github.com/casualjim/pi-heimdall/commit/f52812659aec07fd3f061d91f1ba0d83df472b49))
+* publish from release-please workflow ([42b50fe](https://github.com/casualjim/pi-heimdall/commit/42b50fed28e6f0af9405823cdf98370f729c6ea2))
+
 ## [0.1.1](https://github.com/casualjim/pi-heimdall/compare/pi-heimdall-v0.1.0...pi-heimdall-v0.1.1) (2026-04-12)
 
 
