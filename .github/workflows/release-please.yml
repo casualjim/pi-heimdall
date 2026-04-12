@@ -11,6 +11,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  id-token: write
 
 jobs:
   release-please:
@@ -35,3 +36,39 @@ jobs:
           echo "::error::Release Please did not create a release PR or release."
           echo "::error::Most common cause: commit messages are not Conventional Commits (e.g. feat:, fix:)."
           exit 1
+
+      - name: Checkout release tag
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release.outputs.tag_name }}
+
+      - name: Setup Node.js
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: npm ci
+
+      - name: Typecheck extensions
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: npm run typecheck
+
+      - name: Verify package contents
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: npm run check:pack
+
+      - name: Setup Node.js for npm publish
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish to npm
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: npm publish --provenance --access public
