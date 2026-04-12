@@ -27,6 +27,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-labeling: true
 
       - name: Fail when no release PR is created
         if: ${{ steps.release.outputs.prs_created != 'true' && steps.release.outputs.releases_created != 'true' }}
