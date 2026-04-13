@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/casualjim/pi-heimdall/compare/pi-heimdall-v0.1.6...pi-heimdall-v0.1.7) (2026-04-13)
+
+
+### Bug Fixes
+
+* trigger release workflow directly on main pushes ([b0850ec](https://github.com/casualjim/pi-heimdall/commit/b0850ec8d9d51be13b64a25ad9eb000acaf120ab))
+
 ## [0.1.6](https://github.com/casualjim/pi-heimdall/compare/pi-heimdall-v0.1.5...pi-heimdall-v0.1.6) (2026-04-13)
 
 
