@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/casualjim/pi-heimdall/compare/pi-heimdall-v0.1.4...pi-heimdall-v0.1.5) (2026-04-13)
+
+
+### Bug Fixes
+
+* stop setup-node from injecting fake npm auth token ([b1aabf2](https://github.com/casualjim/pi-heimdall/commit/b1aabf2b5478f33804e8e3afecc0c66a2bc81907))
+
 ## [0.1.4](https://github.com/casualjim/pi-heimdall/compare/pi-heimdall-v0.1.3...pi-heimdall-v0.1.4) (2026-04-12)
 
 
