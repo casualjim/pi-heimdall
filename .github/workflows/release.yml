@@ -1,11 +1,9 @@
 name: Release Please
 
 on:
-  workflow_run:
-    workflows: ["CI"]
+  push:
     branches: [main]
-    types:
-      - completed
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,7 +13,6 @@ permissions:
 
 jobs:
   release-please:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
