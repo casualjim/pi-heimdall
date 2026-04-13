@@ -1,4 +1,4 @@
-name: Release Please
+name: Publish
 
 on:
   push:
@@ -7,57 +7,67 @@ on:
 
 permissions:
   contents: write
-  issues: write
-  pull-requests: write
   id-token: write
 
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  release-please:
+  publish:
+    if: ${{ github.event_name != 'push' || (!contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, '[ci skip]')) }}
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    timeout-minutes: 15
 
     steps:
-      - name: Create or update release PR
-        id: release
-        uses: googleapis/release-please-action@v4.4.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-
-      - name: Fail when no release PR is created
-        if: ${{ steps.release.outputs.prs_created != 'true' && steps.release.outputs.releases_created != 'true' }}
-        run: |
-          echo "::error::Release Please did not create a release PR or release."
-          echo "::error::Most common cause: commit messages are not Conventional Commits (e.g. feat:, fix:)."
-          exit 1
-
-      - name: Checkout release tag
-        if: ${{ steps.release.outputs.release_created == 'true' }}
+      - name: Checkout
         uses: actions/checkout@v6
-        with:
-          ref: ${{ steps.release.outputs.tag_name }}
 
       - name: Setup Node.js
-        if: ${{ steps.release.outputs.release_created == 'true' }}
         uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
 
       - name: Install dependencies
-        if: ${{ steps.release.outputs.release_created == 'true' }}
         run: npm ci
 
       - name: Typecheck extensions
-        if: ${{ steps.release.outputs.release_created == 'true' }}
         run: npm run typecheck
 
       - name: Verify package contents
-        if: ${{ steps.release.outputs.release_created == 'true' }}
         run: npm run check:pack
 
+      - name: Read package metadata
+        id: pkg
+        run: |
+          echo "name=$(node -p \"require('./package.json').name\")" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether version already exists on npm
+        id: exists
+        run: |
+          if npm view "${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "Version ${{ steps.pkg.outputs.version }} already exists on npm; skipping publish."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
-        if: ${{ steps.release.outputs.release_created == 'true' }}
+        if: ${{ steps.exists.outputs.published != 'true' }}
         run: npm publish --provenance --access public
+
+      - name: Bump patch version for next publish
+        if: ${{ steps.exists.outputs.published != 'true' }}
+        run: npm version patch --no-git-tag-version
+
+      - name: Commit version bump
+        if: ${{ steps.exists.outputs.published != 'true' }}
+        run: |
+          NEXT_VERSION=$(node -p "require('./package.json').version")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "chore: bump version to ${NEXT_VERSION} [skip ci]"
+          git push origin HEAD:main
