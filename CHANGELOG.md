@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/casualjim/pi-heimdall/compare/pi-heimdall-v0.1.5...pi-heimdall-v0.1.6) (2026-04-13)
+
+
+### Bug Fixes
+
+* move release workflow to release.yml ([f202d6e](https://github.com/casualjim/pi-heimdall/commit/f202d6ef884940e340bbbfae78acf4101fe49146))
+
 ## [0.1.5](https://github.com/casualjim/pi-heimdall/compare/pi-heimdall-v0.1.4...pi-heimdall-v0.1.5) (2026-04-13)
 
 
