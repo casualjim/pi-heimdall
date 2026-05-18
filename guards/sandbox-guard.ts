@@ -1,10 +1,9 @@
 /**
  * sandbox-guard
  *
- * OS-level filesystem sandboxing for bash commands using bubblewrap (bwrap).
- * Overrides the built-in bash tool with a sandboxed version when enabled.
- *
- * Config comes from the shared HeimdallConfig (loaded by the entry point).
+ * Delegates sandboxed bash commands to the native heimdall-sandbox runtime.
+ * The Pi extension owns only the local enabled toggle, bash wrapping, and
+ * per-command policy generation.
  */
 
 import {
@@ -12,14 +11,25 @@ import {
 	isToolCallEventType,
 	type BashOperations,
 	type ExtensionAPI,
-} from "@mariozechner/pi-coding-agent";
-import { existsSync, lstatSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import type { HeimdallConfig, NormalizedSandboxConfig, SandboxConfig, SandboxPathEntry } from "./types.js";
+} from "@earendil-works/pi-coding-agent";
+import { execSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import ignore from "ignore";
+import { homedir } from "node:os";
+import { delimiter, join, resolve, relative } from "node:path";
+import type {
+	GeneratedSandboxPolicy,
+	HeimdallConfig,
+	NormalizedSandboxConfig,
+	SandboxConfig,
+	SandboxFilesystemPolicy,
+	SandboxPolicyFragment,
+} from "./types.js";
 
-const DEFAULT_ENV_DENY = ["*_TOKEN", "*_SECRET", "*_PASSWORD", "*_KEY"];
+export const MISSING_BINARY_MESSAGE =
+	"heimdall sandbox: heimdall-sandbox binary not found on PATH. " +
+	"Install it with Homebrew from the casualjim tap, install @casualjim/heimdall-sandbox with npm, " +
+	"or run via npx @casualjim/heimdall-sandbox. You can also set sandbox.binaryPath.";
 
 const DEFAULT_PRIVATE_PATHS = [
 	"~/Private",
@@ -43,7 +53,6 @@ const DEFAULT_PRIVATE_PATHS = [
 	"~/.cargo/credentials",
 	"~/.cargo/credentials.toml",
 	// AI coding tools (CLI agents, AI-native IDEs) — API keys commonly stored here.
-	// This list is not exhaustive; users should extend it in .pi/heimdall.json.
 	"~/.claude",
 	"~/.codex",
 	"~/.forge",
@@ -59,7 +68,6 @@ const DEFAULT_PRIVATE_PATHS = [
 	"~/.codeium",
 	"~/.openai",
 	"~/.anthropic",
-
 	// Editor / IDE configs (may contain stored auth tokens)
 	"~/.vscode",
 	"~/.vscode-server",
@@ -69,500 +77,240 @@ const DEFAULT_PRIVATE_PATHS = [
 	"~/.config/nvim",
 	"~/.local/share/nvim",
 	"~/.vim",
-	"~/.viminfo",
+  "~/.viminfo",
 ];
 
-const DEFAULT_PRIVATE_PATH_DENIES = Object.fromEntries(
-	DEFAULT_PRIVATE_PATHS.map((path) => [path, { mode: "deny" } satisfies SandboxPathEntry]),
-) as Record<string, SandboxPathEntry>;
+interface LegacyPathsConfig {
+	[key: string]: { mode: string };
+}
 
-const DEFAULT_PATHS: Record<string, SandboxPathEntry | SandboxPathEntry[]> = {
-	".": { mode: "write" },
-	"/tmp": { mode: "write" },
-	"~/.pi": { mode: "write" },
-	...DEFAULT_PRIVATE_PATH_DENIES,
-
-	"/usr": {},
-	"/opt": {},
-	"/srv": {},
-	"/etc": {},
-	"/nix/store": {},
-	"/run/current-system/sw": {},
-
-	// Legacy/non-usr-merged Linux compatibility. Symlinks into already-mounted
-	// prefixes are skipped during normalization, so these are harmless on modern distros.
-	"/bin": {},
-	"/sbin": {},
-	"/lib": {},
-	"/lib64": {}
-};
-
-const DEFAULT_SANDBOX_CONFIG: NormalizedSandboxConfig = {
-	enabled: false,
-	network: "host",
-	paths: normalizePaths(DEFAULT_PATHS),
-	env: {
-		allow: null,
-		deny: DEFAULT_ENV_DENY,
-		set: {},
-	},
-};
-
-function normalizePaths(
-	paths: Record<string, SandboxPathEntry | SandboxPathEntry[]> = {},
-): Record<string, SandboxPathEntry[]> {
-	const result: Record<string, SandboxPathEntry[]> = {};
-	for (const [prefix, entries] of Object.entries(paths)) {
-		result[prefix] = (Array.isArray(entries) ? entries : [entries]).map((entry) => ({ ...entry }));
+function migratePathsToFilesystem(paths: LegacyPathsConfig): SandboxFilesystemPolicy {
+	const deny: string[] = [];
+	const writable: string[] = [];
+	for (const [path, entry] of Object.entries(paths)) {
+		if (entry.mode === "deny") deny.push(path);
+		else if (entry.mode === "write" || entry.mode === "writable") writable.push(path);
 	}
-	return result;
+	const fs: SandboxFilesystemPolicy = {};
+	if (deny.length > 0) fs.deny = deny;
+	if (writable.length > 0) fs.writable = writable;
+	return fs;
 }
 
-function isLegacySandboxConfig(config: unknown): config is Record<string, unknown> {
-	return !!config && typeof config === "object" && (
-		"networkAccess" in config ||
-		"writableRoots" in config ||
-		"systemPaths" in config ||
-		"etcReal" in config ||
-		"etcSynthetic" in config ||
-		"envAllowlist" in config ||
-		"extraReadPaths" in config
-	);
-}
+export function normalizeSandboxConfig(
+	config?: SandboxConfig | Record<string, unknown>,
+	configPath?: string,
+): NormalizedSandboxConfig {
+	const raw = config ?? {};
+	const sandbox = { ...raw } as SandboxConfig & { paths?: LegacyPathsConfig };
+	const policy: SandboxPolicyFragment = {};
 
-function legacyPaths(config: Record<string, unknown>): Record<string, SandboxPathEntry | SandboxPathEntry[]> {
-	const paths: Record<string, SandboxPathEntry[]> = {};
-	const push = (prefix: string, entry: SandboxPathEntry = {}) => {
-		paths[prefix] = [...(paths[prefix] ?? []), entry];
-	};
+	if (sandbox.paths && typeof sandbox.paths === "object" && !sandbox.filesystem) {
+		sandbox.filesystem = migratePathsToFilesystem(sandbox.paths);
+		delete sandbox.paths;
 
-	for (const path of arrayOfStrings(config.systemPaths)) push(path);
-	for (const path of arrayOfStrings(config.extraReadPaths)) push(path);
-	for (const path of arrayOfStrings(config.etcReal)) push("/etc", { path });
-	for (const path of arrayOfStrings(config.writableRoots)) push(path, { mode: "write" });
-	if (config.etcSynthetic && typeof config.etcSynthetic === "object" && !Array.isArray(config.etcSynthetic)) {
-		for (const [path, content] of Object.entries(config.etcSynthetic as Record<string, unknown>)) {
-			if (typeof content === "string") push("/etc", { path, content });
+		if (configPath) {
+			try {
+				const full = JSON.parse(readFileSync(configPath, "utf-8"));
+				if (full.sandbox?.paths && !full.sandbox?.filesystem) {
+					full.sandbox.filesystem = sandbox.filesystem;
+					delete full.sandbox.paths;
+					writeFileSync(configPath, JSON.stringify(full, null, 2) + "\n");
+				}
+			} catch {
+				// best-effort migration
+			}
 		}
 	}
 
-	return paths;
-}
+	if (sandbox.network !== undefined) policy.network = sandbox.network;
+	if (sandbox.proc !== undefined) policy.proc = sandbox.proc;
+	if (sandbox.env !== undefined) {
+		policy.env = {};
+		if (sandbox.env.allow !== undefined) policy.env.allow = sandbox.env.allow;
+		if (sandbox.env.deny !== undefined) policy.env.deny = sandbox.env.deny;
+	}
+	if (sandbox.filesystem !== undefined) {
+		policy.filesystem = { ...sandbox.filesystem };
+	} else {
+		policy.filesystem = {};
+	}
 
-function arrayOfStrings(value: unknown): string[] {
-	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-export function normalizeSandboxConfig(config?: SandboxConfig | Record<string, unknown>): NormalizedSandboxConfig {
-	const sandbox = (config ?? {}) as SandboxConfig;
-	const legacy = isLegacySandboxConfig(config) ? config : null;
-	const paths = legacy ? legacyPaths(legacy) : sandbox.paths;
-	const envAllow = legacy && Array.isArray(legacy.envAllowlist)
-		? arrayOfStrings(legacy.envAllowlist)
-		: sandbox.env?.allow;
-
-	const mergedPaths = expandPathKeys({
-		...DEFAULT_SANDBOX_CONFIG.paths,
-		...normalizePaths(paths),
-	});
-
-	// Add HOME as read-only by default so users can reference config files
-	// and provide deny rules. User/project config can override with { mode: "write" }.
-	const homeDir = process.env.HOME;
-	if (homeDir && !(homeDir in mergedPaths)) {
-		mergedPaths[homeDir] = [{}];
+	// Merge DEFAULT_PRIVATE_PATHS into deny so the sandbox binary enforces them too
+	const configDeny = policy.filesystem.deny ?? [];
+	const defaultsToAdd = DEFAULT_PRIVATE_PATHS.filter((p) => !configDeny.includes(p));
+	if (defaultsToAdd.length > 0) {
+		policy.filesystem.deny = [...configDeny, ...defaultsToAdd];
 	}
 
 	return {
-		enabled: sandbox.enabled ?? DEFAULT_SANDBOX_CONFIG.enabled,
-		network: sandbox.network ?? (legacy?.networkAccess === false ? "none" : DEFAULT_SANDBOX_CONFIG.network),
-		paths: mergedPaths,
-		env: {
-			allow: envAllow === undefined ? DEFAULT_SANDBOX_CONFIG.env.allow : envAllow,
-			deny: sandbox.env?.deny === undefined ? DEFAULT_SANDBOX_CONFIG.env.deny : sandbox.env.deny,
-			set: sandbox.env?.set === undefined ? DEFAULT_SANDBOX_CONFIG.env.set : sandbox.env.set,
-		},
+		enabled: sandbox.enabled ?? false,
+		...(sandbox.binaryPath ? { binaryPath: sandbox.binaryPath } : {}),
+		policy,
 	};
 }
 
-/** Resolve ~ and $VAR/${VAR} references in path strings. */
-function expandPath(path: string): string {
-	if (path.startsWith("~")) {
-		if (path === "~" || path.startsWith("~/")) {
-			const home = process.env.HOME;
-			if (home) return home + path.slice(1);
-		}
-	}
-	return path.replace(/\$\{?(\w+)\}?/g, (_m, name: string) => process.env[name] ?? "");
-}
-
-function expandPathKeys<T extends SandboxPathEntry>(paths: Record<string, T[]>): Record<string, T[]> {
-	const result: Record<string, T[]> = {};
-	for (const [key, entries] of Object.entries(paths)) {
-		result[expandPath(key)] = entries;
-	}
-	return result;
-}
-
-function resolveSandboxPath(path: string, cwd: string): string {
-	const expanded = expandPath(path);
-	if (expanded === ".") return cwd;
-	return expanded.startsWith("/") ? expanded : resolve(cwd, expanded);
-}
-
-function pathMatchesPrefix(path: string, prefix: string): boolean {
-	return path === prefix || path.startsWith(`${prefix}/`);
-}
-
-export interface SandboxPathAccess {
-	access: "none" | "read" | "write";
-	synthetic: boolean;
-	matchedPath?: string;
-}
-
-export function getSandboxPathAccess(
+export function buildSandboxPolicy(
 	config: NormalizedSandboxConfig,
 	cwd: string,
-	rawPath: string,
-): SandboxPathAccess {
-	const target = resolveSandboxPath(rawPath.replace(/^@/, ""), cwd);
-	let best: { specificity: number; order: number; access: "none" | "read" | "write"; synthetic: boolean; matchedPath: string } | null = null;
-	let order = 0;
-
-	for (const [prefix, entries] of Object.entries(config.paths)) {
-		for (const entry of entries) {
-			const entryTarget = resolveSandboxPath(entry.path ?? prefix, cwd);
-			const matches = entry.path ? target === entryTarget : pathMatchesPrefix(target, entryTarget);
-			if (!matches) {
-				order++;
-				continue;
-			}
-
-			const candidate = {
-				specificity: entryTarget.length + (entry.path ? 10_000 : 0),
-				order,
-				access: entry.mode === "write" ? "write" as const : entry.mode === "deny" ? "none" as const : "read" as const,
-				synthetic: entry.content !== undefined,
-				matchedPath: entryTarget,
-			};
-			if (!best || candidate.specificity > best.specificity ||
-				(candidate.specificity === best.specificity && candidate.order > best.order)) {
-				best = candidate;
-			}
-			order++;
-		}
-	}
-
-	return best
-		? { access: best.access, synthetic: best.synthetic, matchedPath: best.matchedPath }
-		: { access: "none", synthetic: false };
-}
-
-function canReadSandboxPath(config: NormalizedSandboxConfig, cwd: string, path: string): boolean {
-	const access = getSandboxPathAccess(config, cwd, path);
-	// Synthetic mounts do not exist on the host filesystem. Letting the built-in
-	// read tool read that path would expose the host file instead of sandbox content.
-	return access.access !== "none" && !access.synthetic;
-}
-
-function canWriteSandboxPath(config: NormalizedSandboxConfig, cwd: string, path: string): boolean {
-	const access = getSandboxPathAccess(config, cwd, path);
-	return access.access === "write" && !access.synthetic;
-}
-
-function isCompatibilitySymlink(path: string, mountedPrefixes: Set<string>): boolean {
-	try {
-		const stat = lstatSync(path);
-		if (!stat.isSymbolicLink()) return false;
-		const target = resolve(path);
-		for (const prefix of mountedPrefixes) {
-			if (target === prefix || target.startsWith(`${prefix}/`)) return true;
-		}
-	} catch {
-		return false;
-	}
-	return false;
-}
-
-export interface ResolverSupportMounts {
-	dirs: string[];
-	mount?: { source: string; target: string };
-}
-
-function isMounted(path: string, mountedPrefixes: Set<string>): boolean {
-	for (const prefix of mountedPrefixes) {
-		if (path === prefix || path.startsWith(`${prefix}/`)) return true;
-	}
-	return false;
-}
-
-function parentDirs(path: string): string[] {
-	const dirs: string[] = [];
-	let current = dirname(path);
-	while (current !== "/" && current !== ".") {
-		dirs.unshift(current);
-		current = dirname(current);
-	}
-	return dirs;
-}
-
-export function resolverSupportMounts(
-	resolvPath: string,
-	realPath: string,
-	mountedPrefixes: Set<string>,
-): ResolverSupportMounts {
-	if (realPath === resolvPath || isMounted(realPath, mountedPrefixes)) {
-		return { dirs: [] };
-	}
-
-	return {
-		dirs: parentDirs(realPath).filter((dir) => !isMounted(dir, mountedPrefixes)),
-		mount: { source: realPath, target: realPath },
-	};
-}
-
-function hostResolverSupportMounts(config: NormalizedSandboxConfig, cwd: string, mountedPrefixes: Set<string>): ResolverSupportMounts {
-	if (config.network !== "host") return { dirs: [] };
-	if (getSandboxPathAccess(config, cwd, "/etc/resolv.conf").access === "none") return { dirs: [] };
-
-	try {
-		if (!lstatSync("/etc/resolv.conf").isSymbolicLink()) return { dirs: [] };
-		return resolverSupportMounts("/etc/resolv.conf", realpathSync("/etc/resolv.conf"), mountedPrefixes);
-	} catch {
-		return { dirs: [] };
-	}
-}
-
-function syntheticFilename(target: string): string {
-	return target.replace(/[^a-zA-Z0-9._-]/g, "_") || "synthetic";
-}
-
-export function buildBwrapArgs(
-	config: NormalizedSandboxConfig,
-	cwd: string,
-	syntheticDir: string,
 	command: string,
-): string[] {
-	const args: string[] = [];
-	const readPrefixMounts: string[] = [];
-	const writeMounts: string[] = [];
-	const overlayReadMounts: Array<{ source: string; target: string }> = [];
-
-	args.push("--tmpfs", "/");
-	args.push("--dev", "/dev");
-
-	for (const [prefix, entries] of Object.entries(config.paths)) {
-		for (const entry of entries) {
-			const target = resolveSandboxPath(entry.path ?? prefix, cwd);
-			if (entry.content !== undefined) {
-				const syntheticFile = join(syntheticDir, syntheticFilename(target));
-				writeFileSync(syntheticFile, entry.content, "utf-8");
-				overlayReadMounts.push({ source: syntheticFile, target });
-				continue;
-			}
-
-			if (entry.mode === "deny" || !existsSync(target)) continue;
-
-			if (entry.mode === "write") {
-				writeMounts.push(target);
-			} else if (entry.path) {
-				overlayReadMounts.push({ source: target, target });
-			} else {
-				readPrefixMounts.push(target);
-			}
-		}
-	}
-
-	const mountedReadPrefixes = new Set<string>();
-	for (const target of dedupe(readPrefixMounts)) {
-		if (isCompatibilitySymlink(target, mountedReadPrefixes)) continue;
-		args.push("--ro-bind", target, target);
-		mountedReadPrefixes.add(target);
-	}
-
-	for (const target of dedupe(writeMounts)) {
-		args.push("--bind", target, target);
-		mountedReadPrefixes.add(target);
-	}
-
-	const resolverMounts = hostResolverSupportMounts(config, cwd, mountedReadPrefixes);
-	for (const dir of resolverMounts.dirs) {
-		args.push("--dir", dir);
-	}
-	if (resolverMounts.mount) {
-		args.push("--ro-bind", resolverMounts.mount.source, resolverMounts.mount.target);
-	}
-
-	for (const { source, target } of dedupeMounts(overlayReadMounts)) {
-		args.push("--ro-bind", source, target);
-	}
-
-	args.push("--unshare-user");
-	args.push("--unshare-pid");
-	if (config.network === "none") args.push("--unshare-net");
-	args.push("--proc", "/proc");
-	args.push("--die-with-parent");
-	args.push("--new-session");
-	args.push("--");
-	args.push("bash", "-c", command);
-
-	return args;
-}
-
-function dedupe(values: string[]): string[] {
-	return [...new Set(values)];
-}
-
-function dedupeMounts(mounts: Array<{ source: string; target: string }>): Array<{ source: string; target: string }> {
-	const seen = new Set<string>();
-	const result: Array<{ source: string; target: string }> = [];
-	for (const mount of mounts) {
-		const key = `${mount.source}\0${mount.target}`;
-		if (seen.has(key)) continue;
-		seen.add(key);
-		result.push(mount);
-	}
-	return result;
-}
-
-function globToRegExp(pattern: string): RegExp {
-	const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-	return new RegExp(`^${escaped}$`);
-}
-
-export function filterEnv(
-	envConfig: NormalizedSandboxConfig["env"],
-	currentEnv: Record<string, string>,
-): Record<string, string> {
-	const allow = envConfig.allow;
-	const deny = envConfig.deny;
-	const allowPatterns = allow?.map(globToRegExp) ?? null;
-	const denyPatterns = deny?.map(globToRegExp) ?? [];
-	const result: Record<string, string> = {};
-
-	for (const [key, value] of Object.entries(currentEnv)) {
-		const allowed = allowPatterns === null || allowPatterns.some((pattern) => pattern.test(key));
-		const denied = denyPatterns.some((pattern) => pattern.test(key));
-		if (allowed && !denied) result[key] = value;
-	}
-
-	for (const [key, value] of Object.entries(envConfig.set ?? {})) {
-		if (value === null) {
-			delete result[key];
-		} else {
-			result[key] = value;
-		}
-	}
-
-	return result;
-}
-
-/** @deprecated use filterEnv({ allow, deny, set }, env). */
-export function stripEnv(
-	allowlist: string[],
-	currentEnv: Record<string, string>,
-): Record<string, string> {
-	return filterEnv({ allow: allowlist, deny: null, set: {} }, currentEnv);
-}
-
-function findBwrap(): string | null {
-	const pathEnv = process.env.PATH ?? "";
-	for (const dir of pathEnv.split(":")) {
-		const candidate = join(dir, "bwrap");
-		if (existsSync(candidate)) return candidate;
-	}
-	for (const loc of ["/usr/bin/bwrap", "/usr/local/bin/bwrap"]) {
-		if (existsSync(loc)) return loc;
-	}
-	return null;
-}
-
-function createSandboxedBashOps(config: NormalizedSandboxConfig, cwd: string): BashOperations {
+	stdio: "inherit" | "piped" = "piped",
+): GeneratedSandboxPolicy {
 	return {
-		async exec(command, execCwd, { onData, signal, timeout }) {
-			const workDir = execCwd || cwd;
+		...config.policy,
+		cwd,
+		command: ["bash", "-c", command],
+		stdio,
+	};
+}
+
+
+export interface SandboxBinaryResolution {
+	binaryPath: string;
+	found: boolean;
+	source: "config" | "npm" | "path" | "default";
+}
+
+export function resolveHeimdallSandboxBinary(configuredBinaryPath?: string): SandboxBinaryResolution {
+	if (configuredBinaryPath?.trim()) {
+		return { binaryPath: configuredBinaryPath.trim(), found: true, source: "config" };
+	}
+
+	// Try npm-installed platform binary first
+	for (const pkg of [
+		"@casualjim/heimdall-sandbox-darwin-arm64",
+		"@casualjim/heimdall-sandbox-linux-x64",
+		"@casualjim/heimdall-sandbox-linux-arm64",
+	]) {
+		try {
+			const candidate = require.resolve(`${pkg}/bin/heimdall-sandbox`);
+			if (existsSync(candidate)) return { binaryPath: candidate, found: true, source: "npm" };
+		} catch {
+			// Package not installed on this platform
+		}
+	}
+
+	// Try PATH lookup
+	const binaryName = "heimdall-sandbox";
+	const pathEnv = process.env.PATH ?? "";
+	for (const dir of pathEnv.split(delimiter)) {
+		if (!dir) continue;
+		const candidate = join(dir, binaryName);
+		if (existsSync(candidate)) return { binaryPath: candidate, found: true, source: "path" };
+	}
+
+	return { binaryPath: binaryName, found: false, source: "default" };
+}
+
+export function findHeimdallSandboxBinary(): string {
+	return resolveHeimdallSandboxBinary().binaryPath;
+}
+
+type SpawnLike = typeof spawn;
+
+function killProcessGroup(child: ChildProcessWithoutNullStreams): void {
+	if (!child.pid) {
+		child.kill("SIGKILL");
+		return;
+	}
+
+	try {
+		process.kill(-child.pid, "SIGKILL");
+	} catch {
+		child.kill("SIGKILL");
+	}
+}
+
+export function createSandboxedBashOps(
+	config: NormalizedSandboxConfig,
+	defaultCwd: string,
+	options: { binaryPath?: string; spawnFn?: SpawnLike } = {},
+): BashOperations {
+	const binaryPath = options.binaryPath ?? findHeimdallSandboxBinary();
+	const spawnFn = options.spawnFn ?? spawn;
+
+	return {
+		async exec(command, execCwd, { onData, signal, timeout, env }) {
+			const workDir = execCwd || defaultCwd;
 			if (!existsSync(workDir)) {
 				throw new Error(`Working directory does not exist: ${workDir}`);
 			}
 
-			const syntheticDir = join(
-				process.env.TMPDIR || "/tmp",
-				`heimdall-sandbox-${randomUUID()}`,
-			);
-			mkdirSync(syntheticDir, { recursive: true });
+			const policy = buildSandboxPolicy(config, workDir, command);
+			const policyJson = `${JSON.stringify(policy)}\n`;
 
-			try {
-				const bwrapPath = findBwrap();
-				if (!bwrapPath) {
-					throw new Error("bubblewrap (bwrap) not found. Install it to enable sandboxing.");
+			return await new Promise((resolve, reject) => {
+				let settled = false;
+				const settleReject = (error: Error) => {
+					if (settled) return;
+					settled = true;
+					reject(error);
+				};
+				const settleResolve = (exitCode: number | null) => {
+					if (settled) return;
+					settled = true;
+					resolve({ exitCode });
+				};
+
+				const child = spawnFn(binaryPath, ["exec", "--policy", "-"], {
+					cwd: workDir,
+					env: env ?? process.env,
+					detached: true,
+					stdio: ["pipe", "pipe", "pipe"],
+				});
+
+				let timedOut = false;
+				let timeoutHandle: NodeJS.Timeout | undefined;
+
+				if (timeout !== undefined && timeout > 0) {
+					timeoutHandle = setTimeout(() => {
+						timedOut = true;
+						killProcessGroup(child);
+					}, timeout * 1000);
 				}
 
-				const bwrapArgs = buildBwrapArgs(config, cwd, syntheticDir, command);
-				const cleanEnv = filterEnv(config.env, process.env as Record<string, string>);
+				child.stdout.on("data", onData);
+				child.stderr.on("data", onData);
 
-				return await new Promise((resolve, reject) => {
-					const child = spawn(bwrapPath, bwrapArgs, {
-						cwd: workDir,
-						env: cleanEnv,
-						detached: true,
-						stdio: ["ignore", "pipe", "pipe"],
-					});
-
-					let timedOut = false;
-					let timeoutHandle: NodeJS.Timeout | undefined;
-
-					if (timeout !== undefined && timeout > 0) {
-						timeoutHandle = setTimeout(() => {
-							timedOut = true;
-							if (child.pid) {
-								try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
-							}
-						}, timeout * 1000);
-					}
-
-					child.stdout?.on("data", onData);
-					child.stderr?.on("data", onData);
-
-					child.on("error", (err) => {
-						if (timeoutHandle) clearTimeout(timeoutHandle);
-						reject(err);
-					});
-
-					const onAbort = () => {
-						if (child.pid) {
-							try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
-						}
-					};
-
-					signal?.addEventListener("abort", onAbort, { once: true });
-
-					child.on("close", (code) => {
-						if (timeoutHandle) clearTimeout(timeoutHandle);
-						signal?.removeEventListener("abort", onAbort);
-
-						if (signal?.aborted) {
-							reject(new Error("aborted"));
-						} else if (timedOut) {
-							reject(new Error(`timeout:${timeout}`));
-						} else {
-							resolve({ exitCode: code ?? 1 });
-						}
-					});
+				child.on("error", (err) => {
+					if (timeoutHandle) clearTimeout(timeoutHandle);
+					settleReject(new Error(
+						`Failed to launch heimdall-sandbox at ${JSON.stringify(binaryPath)}: ${err.message}`,
+					));
 				});
-			} finally {
-				try { rmSync(syntheticDir, { recursive: true, force: true }); } catch { /* best effort */ }
-			}
+
+				const onAbort = () => {
+					killProcessGroup(child);
+				};
+
+				signal?.addEventListener("abort", onAbort, { once: true });
+
+				child.on("close", (code) => {
+					if (timeoutHandle) clearTimeout(timeoutHandle);
+					signal?.removeEventListener("abort", onAbort);
+
+					if (signal?.aborted) {
+						settleReject(new Error("aborted"));
+					} else if (timedOut) {
+						settleReject(new Error(`timeout:${timeout}`));
+					} else {
+						settleResolve(code);
+					}
+				});
+
+				child.stdin.end(policyJson);
+			});
 		},
 	};
 }
 
-export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => HeimdallConfig): void {
+export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => HeimdallConfig, getConfigPath?: () => string | undefined): void {
 	let sandboxConfig: NormalizedSandboxConfig | null = null;
 	let sandboxCwd = process.cwd();
-	let bwrapAvailable = false;
+	let sandboxBinary = resolveHeimdallSandboxBinary().binaryPath;
 
 	pi.registerFlag("no-sandbox", {
-		description: "Disable OS-level sandboxing for bash commands",
+		description: "Disable native heimdall-sandbox delegation for bash commands",
 		type: "boolean",
 		default: false,
 	});
@@ -572,54 +320,55 @@ export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => 
 		const noSandbox = pi.getFlag("no-sandbox") as boolean;
 		if (noSandbox) {
 			sandboxConfig = null;
-			bwrapAvailable = false;
 			ctx.ui.notify("heimdall sandbox: disabled via --no-sandbox", "warning");
 			return;
 		}
 
-		const config = normalizeSandboxConfig(getHeimdallConfig().sandbox as SandboxConfig | undefined);
+		const config = normalizeSandboxConfig(
+			getHeimdallConfig().sandbox as SandboxConfig | undefined,
+			getConfigPath?.(),
+		);
+		const binaryResolution = resolveHeimdallSandboxBinary(config.binaryPath);
+		sandboxBinary = binaryResolution.binaryPath;
 		sandboxConfig = null;
-		bwrapAvailable = false;
 		if (!config.enabled) {
 			return;
 		}
 
-		if (process.platform !== "linux") {
-			ctx.ui.notify(
-				`heimdall sandbox: not supported on ${process.platform} (Linux only)`,
-				"warning",
-			);
-			return;
+		if (!binaryResolution.found) {
+			ctx.ui.notify(MISSING_BINARY_MESSAGE, "warning");
 		}
 
-		const bwrap = findBwrap();
-		if (!bwrap) {
-			ctx.ui.notify(
-				"heimdall sandbox: bwrap not found. Install bubblewrap to enable sandboxing.",
-				"warning",
-			);
-			return;
-		}
-
-		bwrapAvailable = true;
 		sandboxConfig = config;
 
-		const entries = Object.values(config.paths).flat();
-		const writeCount = entries.filter((entry) => entry.mode === "write").length;
-		const envIcon = config.env.allow === null ? "E∞" : `E${config.env.allow.length}`;
-		const networkIcon = config.network === "host" ? "↔" : "⊘";
+		const writeCount = config.policy.filesystem?.writable?.length ?? 0;
+		const envDenyCount = config.policy.env?.deny?.length ?? 0;
+		const envIcon = envDenyCount > 0 ? `🔒${envDenyCount}` : "";
+		const networkIcon = config.policy.network === "host" ? "↔" : "⊘";
 		const theme = ctx.ui.theme;
+
+		const statusText = [
+			"🛡",
+			`✎${writeCount}`,
+			envIcon,
+			networkIcon,
+		].filter(Boolean).join(" │ ");
+
+		ctx.ui.setWidget("heimdall-sandbox", [statusText], { placement: "belowEditor" });
+
 		ctx.ui.setStatus(
 			"heimdall-sandbox",
 			[
 				theme.fg("accent", "🛡"),
 				theme.fg("success", `✎${writeCount}`),
 				theme.fg("muted", envIcon),
-				theme.fg(config.network === "host" ? "success" : "warning", networkIcon),
+				theme.fg(config.policy.network === "host" ? "success" : "warning", networkIcon),
 			].join(theme.fg("dim", "│")),
 		);
 		ctx.ui.notify("heimdall sandbox: active", "info");
 	});
+
+	const defaultOps = () => createSandboxedBashOps(sandboxConfig!, sandboxCwd, { binaryPath: sandboxBinary });
 
 	const localCwd = process.cwd();
 	const localBash = createBashTool(localCwd);
@@ -627,32 +376,103 @@ export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => 
 	pi.registerTool({
 		...localBash,
 		label: "bash (heimdall sandbox)",
-		async execute(id, params, signal, onUpdate, _ctx) {
-			if (!sandboxConfig || !bwrapAvailable) {
+		async execute(id, params, signal, onUpdate) {
+			if (!sandboxConfig) {
 				return localBash.execute(id, params, signal, onUpdate);
 			}
 
-			const sandboxedBash = createBashTool(sandboxCwd, {
-				operations: createSandboxedBashOps(sandboxConfig, sandboxCwd),
-			});
+			const ops = defaultOps();
+			const sandboxedBash = createBashTool(sandboxCwd, { operations: ops });
 			return sandboxedBash.execute(id, params, signal, onUpdate);
 		},
 	});
 
-	pi.on("user_bash", () => {
-		if (!sandboxConfig || !bwrapAvailable) return undefined;
+	pi.on("user_bash", async (_event) => {
+		if (!sandboxConfig) return undefined;
+
 		return {
-			operations: createSandboxedBashOps(sandboxConfig, sandboxCwd),
+			operations: defaultOps(),
 		};
 	});
 
+	function untildify(path: string): string {
+		return path.replace(/^~(?=\/|$)/, homedir());
+	}
+
+	function loadFragmentFile(cwd: string, filename: string): string[] {
+		const filepath = join(cwd, filename);
+		if (!existsSync(filepath)) return [];
+		try {
+			return readFileSync(filepath, "utf-8")
+				.split(/\r?\n/)
+				.map((line) => line.trim())
+				.filter((line) => line.length > 0 && !line.startsWith("#"));
+		} catch {
+			return [];
+		}
+	}
+
+	function isDenied(filesystem: SandboxFilesystemPolicy | undefined, cwd: string, rawPath: string): boolean {
+		const denyPatterns = [...DEFAULT_PRIVATE_PATHS, ...(filesystem?.deny ?? []), ...loadFragmentFile(cwd, ".heimdall-deny")];
+		const expandedPatterns = denyPatterns.map((p) => resolve(cwd, untildify(p)));
+		const target = resolve(cwd, untildify(rawPath));
+
+		// Absolute path patterns: prefix match
+		for (const abs of expandedPatterns) {
+			if (target === abs || target.startsWith(`${abs}/`)) {
+				return true;
+			}
+		}
+
+		// Gitignore-style patterns: use ignore library with relative paths
+		const globPatterns = denyPatterns.filter((p) => !p.startsWith("/") && !p.startsWith("~"));
+		if (globPatterns.length > 0) {
+			const ig = ignore().add(globPatterns);
+			const rel = relative(cwd, target);
+			if (rel && !rel.startsWith("..")) {
+				return ig.ignores(rel);
+			}
+		}
+
+		return false;
+	}
+
+	function isWritable(filesystem: SandboxFilesystemPolicy | undefined, cwd: string, rawPath: string): boolean {
+		const writePatterns = [...(filesystem?.writable ?? []), ...loadFragmentFile(cwd, ".heimdall-write")];
+		if (writePatterns.length === 0) return false; // No writable policy = read-only
+
+		const target = resolve(cwd, untildify(rawPath));
+
+		// Resolve relative patterns to absolute for prefix matching
+		const absolutePatterns = writePatterns.map((p) => resolve(cwd, untildify(p)));
+		for (const abs of absolutePatterns) {
+			if (target === abs || target.startsWith(`${abs}/`)) {
+				return true;
+			}
+		}
+
+		// Gitignore-style patterns
+		const globPatterns = writePatterns.filter((p) => !p.startsWith("/") && !p.startsWith("~"));
+		if (globPatterns.length > 0) {
+			const ig = ignore().add(globPatterns);
+			const rel = relative(cwd, target);
+			if (rel && !rel.startsWith("..")) {
+				return ig.ignores(rel);
+			}
+		}
+
+		return false;
+	}
+
 	pi.on("tool_call", async (event, ctx) => {
-		if (!sandboxConfig || !sandboxConfig.enabled) return undefined;
+		if (!sandboxConfig) return undefined;
+
+		const filesystem = sandboxConfig.policy.filesystem;
 
 		const block = (operation: "read" | "write", path: string) => {
 			const reason =
-				`Blocked: ${event.toolName} attempted to ${operation} "${path}" outside the heimdall sandbox path policy. ` +
-				`Use a path mounted with ${operation === "write" ? 'mode "write"' : 'read access'} in sandbox.paths, or ask the user to adjust .pi/heimdall.json.`;
+				`Blocked: ${event.toolName} attempted to ${operation} "${path}" denied by heimdall sandbox filesystem policy. ` +
+				`Adjust .pi/heimdall.json to allow this path.`;
 			if (ctx.hasUI) ctx.ui.notify(`heimdall sandbox: blocked ${event.toolName} ${path}`, "warning");
 			return { block: true as const, reason };
 		};
@@ -660,14 +480,16 @@ export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => 
 		const input = event.input as Record<string, unknown>;
 		const path = typeof input.path === "string" ? input.path : ".";
 
-		if (isToolCallEventType("read", event) || event.toolName === "grep" || event.toolName === "find" || event.toolName === "ls") {
-			if (!canReadSandboxPath(sandboxConfig, sandboxCwd, path)) return block("read", path);
-			return undefined;
+		// Deny always blocks both read and write for host tools
+		if (isDenied(filesystem, sandboxCwd, path)) {
+			return block("read", path);
 		}
 
+		// Write/edit require explicit writable grant
 		if (isToolCallEventType("write", event) || isToolCallEventType("edit", event)) {
-			if (typeof input.path !== "string") return undefined;
-			if (!canWriteSandboxPath(sandboxConfig, sandboxCwd, input.path)) return block("write", input.path);
+			if (!isWritable(filesystem, sandboxCwd, path)) {
+				return block("write", path);
+			}
 		}
 
 		return undefined;
@@ -681,20 +503,18 @@ export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => 
 				return;
 			}
 
+			let version = "unknown";
+			try {
+				version = execSync(`"${sandboxBinary}" --version`, { encoding: "utf-8" }).trim();
+			} catch { /* ignore */ }
+
 			const lines = [
 				"heimdall sandbox configuration:",
 				"",
-				`Network: ${sandboxConfig.network === "host" ? "shared (host)" : "isolated"}`,
-				`Env allow: ${sandboxConfig.env.allow === null ? "inherited" : sandboxConfig.env.allow.join(", ")}`,
-				`Env deny: ${sandboxConfig.env.deny?.join(", ") || "(none)"}`,
-				"Paths:",
-				...Object.entries(sandboxConfig.paths).flatMap(([prefix, entries]) =>
-					entries.map((entry) => {
-						const target = entry.path ?? prefix;
-						const kind = entry.content === undefined ? target : `${target} (synthetic)`;
-						return `  ${prefix}: ${kind} [${entry.mode ?? "read"}]`;
-					}),
-				),
+				`Binary: ${sandboxBinary}`,
+				`Version: ${version}`,
+				"Policy fragment:",
+				JSON.stringify(sandboxConfig.policy, null, 2),
 			];
 			ctx.ui.notify(lines.join("\n"), "info");
 		},

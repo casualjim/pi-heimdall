@@ -1,360 +1,587 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, rmSync, readFileSync } from "node:fs";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { EventEmitter } from "node:events";
+import { tmpdir, homedir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { buildBwrapArgs, filterEnv, getSandboxPathAccess, normalizeSandboxConfig, resolverSupportMounts, stripEnv } from "../guards/sandbox-guard";
+import type { spawn } from "node:child_process";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	MISSING_BINARY_MESSAGE,
+	buildSandboxPolicy,
+	createSandboxedBashOps,
+	normalizeSandboxConfig,
+	registerSandboxGuard,
+	resolveHeimdallSandboxBinary,
+} from "../guards/sandbox-guard";
 
 describe("sandbox-guard", () => {
-	describe("filterEnv", () => {
-		it("inherits env by default and applies deny globs", () => {
-			const env = {
-				PATH: "/usr/bin",
-				HOME: "/home/user",
-				AWS_SECRET_ACCESS_KEY: "super-secret-key",
-				DATABASE_URL: "postgres://user:pass@localhost/db",
-				GITHUB_TOKEN: "ghp_abc123",
-			};
-
-			const result = filterEnv({ allow: null, deny: ["AWS_*", "GITHUB_TOKEN"] }, env);
-
-			expect(result).toEqual({
-				PATH: "/usr/bin",
-				HOME: "/home/user",
-				DATABASE_URL: "postgres://user:pass@localhost/db",
-			});
-		});
-
-		it("allows an explicit allow list", () => {
-			const env = { PATH: "/usr/bin", HOME: "/home/user", SECRET: "value" };
-			const result = filterEnv({ allow: ["PATH", "HOME"], deny: null }, env);
-			expect(result).toEqual({ PATH: "/usr/bin", HOME: "/home/user" });
-		});
-
-		it("lets deny override allow", () => {
-			const env = { PATH: "/usr/bin", GITHUB_TOKEN: "token" };
-			const result = filterEnv({ allow: ["PATH", "GITHUB_TOKEN"], deny: ["*_TOKEN"] }, env);
-			expect(result).toEqual({ PATH: "/usr/bin" });
-		});
-
-		it("treats an empty allow list as no inherited env", () => {
-			const env = { PATH: "/usr/bin" };
-			const result = filterEnv({ allow: [], deny: null, set: {} }, env);
-			expect(result).toEqual({});
-		});
-
-		it("applies set overrides after allow and deny", () => {
-			const env = { PATH: "/usr/bin", GITHUB_TOKEN: "token", HOME: "/home/user" };
-			const result = filterEnv({
-				allow: ["PATH", "GITHUB_TOKEN", "HOME"],
-				deny: ["*_TOKEN"],
-				set: {
-					PATH: "/custom/bin:/usr/bin",
-					GITHUB_TOKEN: "explicit",
-					HOME: null,
-				},
-			}, env);
-			expect(result).toEqual({
-				PATH: "/custom/bin:/usr/bin",
-				GITHUB_TOKEN: "explicit",
-			});
-		});
-
-		it("keeps stripEnv compatibility", () => {
-			const result = stripEnv(["PATH"], { PATH: "/usr/bin", SECRET: "value" });
-			expect(result).toEqual({ PATH: "/usr/bin" });
-		});
-	});
-
 	describe("normalizeSandboxConfig", () => {
-		it("defaults to disabled", () => {
-			expect(normalizeSandboxConfig().enabled).toBe(false);
+		it("defaults to disabled with default private paths in policy", () => {
+			const config = normalizeSandboxConfig();
+			expect(config.enabled).toBe(false);
+			expect(config.policy.filesystem?.deny).toContain("~/.ssh");
+			expect(config.policy.filesystem?.deny).toContain("~/.aws");
 		});
 
-		it("denies sensitive home paths by default", () => {
-			const previousHome = process.env.HOME;
-			process.env.HOME = "/home/user";
-
-			try {
-				const config = normalizeSandboxConfig({ enabled: true });
-				const privatePaths = [
-					"/home/user/Private",
-					"/home/user/.ssh",
-					"/home/user/.config",
-					"/home/user/.aws",
-					"/home/user/.azure",
-					"/home/user/.gcloud",
-					"/home/user/.oci",
-					"/home/user/.kube",
-					"/home/user/.docker",
-					"/home/user/.gnupg",
-					"/home/user/.sops",
-					"/home/user/.age",
-					"/home/user/.password-store",
-					"/home/user/.terraform.d",
-					"/home/user/.vault-token",
-					"/home/user/.netrc",
-					"/home/user/.npmrc",
-					"/home/user/.pypirc",
-					"/home/user/.cargo/credentials",
-					"/home/user/.cargo/credentials.toml",
-					"/home/user/.claude",
-					"/home/user/.codex",
-					"/home/user/.forge",
-					"/home/user/.cursor",
-					"/home/user/.windsurf",
-					"/home/user/.openai",
-					"/home/user/.anthropic",
-				];
-
-				for (const path of privatePaths) {
-					expect(config.paths[path]).toEqual([{ mode: "deny" }]);
-					expect(getSandboxPathAccess(config, "/repo", `${path}/secret`).access).toBe("none");
-				}
-			} finally {
-				if (previousHome === undefined) {
-					delete process.env.HOME;
-				} else {
-					process.env.HOME = previousHome;
-				}
-			}
-		});
-
-		it("uses simplified paths and env schema", () => {
+		it("keeps enabled and binaryPath as Pi-local settings outside the native policy", () => {
 			const config = normalizeSandboxConfig({
-				enabled: true,
-				network: "none",
-				paths: {
-					"./src": { mode: "write" },
-					"/etc": [{ path: "/etc/hosts" }],
-				},
-				env: { allow: ["PATH"], deny: ["*_TOKEN"] },
+				enabled: false,
+				binaryPath: "/custom/heimdall-sandbox",
+				network: "host",
+				proc: "default",
+				env: { deny: ["GITHUB_TOKEN"] },
+				filesystem: { writable: ["."] },
 			});
 
-			expect(config.enabled).toBe(true);
-			expect(config.network).toBe("none");
-			expect(config.paths["./src"]).toEqual([{ mode: "write" }]);
-			expect(config.paths["/etc"]).toEqual([{ path: "/etc/hosts" }]);
-			expect(config.env).toEqual({ allow: ["PATH"], deny: ["*_TOKEN"], set: {} });
+			expect(config.enabled).toBe(false);
+			expect(config.binaryPath).toBe("/custom/heimdall-sandbox");
+			expect(config.policy).toMatchObject({
+				network: "host",
+				proc: "default",
+				env: { deny: ["GITHUB_TOKEN"] },
+				filesystem: { writable: ["."] },
+			});
+			expect(config.policy).not.toHaveProperty("enabled");
+			expect(config.policy).not.toHaveProperty("binaryPath");
 		});
 
-		it("maps legacy config to the new internal shape", () => {
+		it("drops legacy POC fields instead of translating or forwarding them", () => {
 			const config = normalizeSandboxConfig({
 				enabled: true,
 				networkAccess: false,
-				writableRoots: [".", "/tmp"],
+				writableRoots: ["."],
 				systemPaths: ["/usr"],
 				etcReal: ["/etc/hosts"],
 				etcSynthetic: { "/etc/passwd": "synthetic" },
 				envAllowlist: ["PATH"],
+				extraReadPaths: ["/opt"],
 			});
 
-			expect(config.network).toBe("none");
-			expect(config.paths["."]).toContainEqual({ mode: "write" });
-			expect(config.paths["/usr"]).toEqual([{}]);
-			expect(config.paths["/etc"]).toEqual([
-				{ path: "/etc/hosts" },
-				{ path: "/etc/passwd", content: "synthetic" },
-			]);
-			expect(config.env.allow).toEqual(["PATH"]);
+			expect(config.enabled).toBe(true);
+			expect(config.policy).not.toHaveProperty("network");
+			expect(config.policy).not.toHaveProperty("proc");
+			expect(config.policy).not.toHaveProperty("env");
+			// defaults are still merged into filesystem.deny
+			expect(config.policy.filesystem?.deny).toContain("~/.ssh");
 		});
 	});
 
-	describe("getSandboxPathAccess", () => {
-		const cwd = "/repo";
-
-		it("allows reads under read prefixes", () => {
-			const config = normalizeSandboxConfig({ enabled: true, paths: { "./docs": {} } });
-			expect(getSandboxPathAccess(config, cwd, "./docs/guide.md").access).toBe("read");
-		});
-
-		it("allows writes under write prefixes", () => {
-			const config = normalizeSandboxConfig({ enabled: true, paths: { "./src": { mode: "write" } } });
-			expect(getSandboxPathAccess(config, cwd, "./src/main.ts").access).toBe("write");
-		});
-
-		it("lets specific read paths override writable prefixes", () => {
+	describe("buildSandboxPolicy", () => {
+		it("combines configured native fields with runtime bash execution fields", () => {
 			const config = normalizeSandboxConfig({
 				enabled: true,
-				paths: {
-					".": [
-						{ mode: "write" },
-						{ path: "./.git" },
-					],
+				network: "host",
+				proc: "default",
+				env: { deny: ["GITHUB_TOKEN"] },
+				filesystem: {
+					deny: ["**/.env*", "!**/.env.example"],
+					writable: ["."],
+					virtual: { "/etc/hosts": "127.0.0.1 localhost\n" },
 				},
 			});
-			expect(getSandboxPathAccess(config, cwd, "./package.json").access).toBe("write");
-			expect(getSandboxPathAccess(config, cwd, "./.git").access).toBe("read");
-		});
 
-		it("marks synthetic paths so host reads can be blocked", () => {
-			const config = normalizeSandboxConfig({
-				enabled: true,
-				paths: { "/etc": [{ path: "/etc/passwd", content: "synthetic" }] },
-			});
-			expect(getSandboxPathAccess(config, cwd, "/etc/passwd")).toEqual({
-				access: "read",
-				synthetic: true,
-				matchedPath: "/etc/passwd",
-			});
-		});
-
-		it("denies paths outside configured prefixes", () => {
-			const config = normalizeSandboxConfig({ enabled: true, paths: { "./src": { mode: "write" } } });
-			expect(getSandboxPathAccess(config, cwd, "/home/user/.ssh/id_rsa").access).toBe("none");
-		});
-	});
-
-	describe("resolverSupportMounts", () => {
-		it("adds parent dirs and real resolver bind for systemd-resolved symlinks", () => {
-			const support = resolverSupportMounts(
-				"/etc/resolv.conf",
-				"/run/systemd/resolve/stub-resolv.conf",
-				new Set(["/etc"]),
-			);
-
-			expect(support).toEqual({
-				dirs: ["/run", "/run/systemd", "/run/systemd/resolve"],
-				mount: {
-					source: "/run/systemd/resolve/stub-resolv.conf",
-					target: "/run/systemd/resolve/stub-resolv.conf",
+			expect(buildSandboxPolicy(config, "/repo", "npm test")).toMatchObject({
+				network: "host",
+				proc: "default",
+				env: { deny: ["GITHUB_TOKEN"] },
+				filesystem: {
+					deny: expect.arrayContaining(["**/.env*", "!**/.env.example", "~/.ssh"]),
+					writable: ["."],
+					virtual: { "/etc/hosts": "127.0.0.1 localhost\n" },
 				},
+				cwd: "/repo",
+				command: ["bash", "-c", "npm test"],
+				stdio: "piped",
 			});
 		});
 
-		it("does not add a bind when the resolver target is already mounted", () => {
-			const support = resolverSupportMounts(
-				"/etc/resolv.conf",
-				"/run/systemd/resolve/stub-resolv.conf",
-				new Set(["/etc", "/run"]),
+		it("omits Pi-local settings from generated policy even when sandboxing is active", () => {
+			const policy = buildSandboxPolicy(
+				normalizeSandboxConfig({ enabled: true, binaryPath: "/custom/heimdall-sandbox" }),
+				"/repo",
+				"echo ok",
 			);
-
-			expect(support).toEqual({ dirs: [] });
-		});
-
-		it("does not add a bind when resolv.conf is not a symlink", () => {
-			const support = resolverSupportMounts("/etc/resolv.conf", "/etc/resolv.conf", new Set(["/etc"]));
-
-			expect(support).toEqual({ dirs: [] });
-		});
-
-		it("allows explicit deny of resolv.conf to suppress resolver support", () => {
-			const config = normalizeSandboxConfig({
-				enabled: true,
-				paths: { "/etc": [{ path: "/etc/resolv.conf", mode: "deny" }] },
-			});
-
-			expect(getSandboxPathAccess(config, "/repo", "/etc/resolv.conf").access).toBe("none");
+			expect(policy).not.toHaveProperty("enabled");
+			expect(policy).not.toHaveProperty("binaryPath");
 		});
 	});
 
-	describe("buildBwrapArgs", () => {
-		let syntheticDir: string;
-		let projectDir: string;
+	describe("resolveHeimdallSandboxBinary", () => {
+		it("uses an explicit config binary path", () => {
+			expect(resolveHeimdallSandboxBinary("/custom/heimdall-sandbox")).toEqual({
+				binaryPath: "/custom/heimdall-sandbox",
+				found: true,
+				source: "config",
+			});
+		});
+	});
+
+	describe("createSandboxedBashOps", () => {
+		it("spawns heimdall-sandbox exec --policy - and writes policy JSON to stdin", async () => {
+			const cwd = join(tmpdir(), `heimdall-sandbox-test-${Date.now()}`);
+			mkdirSync(cwd, { recursive: true });
+
+			const calls: Array<{
+				command: string;
+				args: string[];
+				options: Record<string, unknown>;
+				stdin: string;
+			}> = [];
+
+			const fakeSpawn = ((command: string, args: string[], options: Record<string, unknown>) => {
+				const child = new EventEmitter() as EventEmitter & {
+					pid: number;
+					stdout: EventEmitter;
+					stderr: EventEmitter;
+					stdin: { end: (data: string) => void };
+					kill: ReturnType<typeof vi.fn>;
+				};
+				const call = { command, args, options, stdin: "" };
+				calls.push(call);
+				child.pid = 12345;
+				child.stdout = new EventEmitter();
+				child.stderr = new EventEmitter();
+				child.stdin = {
+					end(data: string) {
+						call.stdin = data;
+						queueMicrotask(() => child.emit("close", 0));
+					},
+				};
+				child.kill = vi.fn();
+				return child;
+			}) as unknown as typeof spawn;
+
+			try {
+				const config = normalizeSandboxConfig({
+					enabled: true,
+					network: "none",
+					filesystem: { writable: ["."] },
+				});
+				const ops = createSandboxedBashOps(config, cwd, {
+					binaryPath: "/bin/heimdall-sandbox",
+					spawnFn: fakeSpawn,
+				});
+
+				await expect(ops.exec("echo hi", cwd, { onData: vi.fn() })).resolves.toEqual({ exitCode: 0 });
+
+				expect(calls).toHaveLength(1);
+				expect(calls[0]?.command).toBe("/bin/heimdall-sandbox");
+				expect(calls[0]?.args).toEqual(["exec", "--policy", "-"]);
+				expect(calls[0]?.options).toMatchObject({
+					cwd,
+					detached: true,
+					stdio: ["pipe", "pipe", "pipe"],
+				});
+				expect(JSON.parse(calls[0]?.stdin ?? "{}")).toMatchObject({
+					network: "none",
+					filesystem: { writable: ["."], deny: expect.arrayContaining(["~/.ssh"]) },
+					cwd,
+					command: ["bash", "-c", "echo hi"],
+					stdio: "piped",
+				});
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+
+		it("surfaces native launch failures clearly", async () => {
+			const cwd = join(tmpdir(), `heimdall-sandbox-test-${Date.now()}`);
+			mkdirSync(cwd, { recursive: true });
+
+			const fakeSpawn = (() => {
+				const child = new EventEmitter() as EventEmitter & {
+					pid: number;
+					stdout: EventEmitter;
+					stderr: EventEmitter;
+					stdin: { end: (data: string) => void };
+					kill: ReturnType<typeof vi.fn>;
+				};
+				child.pid = 12345;
+				child.stdout = new EventEmitter();
+				child.stderr = new EventEmitter();
+				child.stdin = { end: vi.fn() };
+				child.kill = vi.fn();
+				queueMicrotask(() => child.emit("error", new Error("ENOENT")));
+				return child;
+			}) as unknown as typeof spawn;
+
+			try {
+				const ops = createSandboxedBashOps(normalizeSandboxConfig({ enabled: true }), cwd, {
+					binaryPath: "/missing/heimdall-sandbox",
+					spawnFn: fakeSpawn,
+				});
+
+				await expect(ops.exec("echo hi", cwd, { onData: vi.fn() })).rejects.toThrow(
+					'Failed to launch heimdall-sandbox at "/missing/heimdall-sandbox": ENOENT',
+				);
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("registerSandboxGuard", () => {
+		it("does not activate sandbox operations when config is disabled", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({ sandbox: { enabled: false } }));
+
+			await harness.emitSessionStart();
+
+			expect(harness.notify).not.toHaveBeenCalledWith("heimdall sandbox: active", "info");
+			await expect(harness.userBash()).resolves.toBeUndefined();
+		});
+
+		it("honors --no-sandbox even when config enables sandboxing", async () => {
+			const harness = createPiHarness(true);
+			registerSandboxGuard(harness.pi, () => ({ sandbox: { enabled: true } }));
+
+			await harness.emitSessionStart();
+
+			expect(harness.notify).toHaveBeenCalledWith("heimdall sandbox: disabled via --no-sandbox", "warning");
+			await expect(harness.userBash()).resolves.toBeUndefined();
+		});
+
+		it("warns with install guidance when binary is not found", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({ sandbox: { enabled: true, binaryPath: "/nonexistent/heimdall-sandbox" } }));
+
+			await harness.emitSessionStart();
+			// Configured path is always "found" but will fail at exec time
+			expect(harness.notify).toHaveBeenCalledWith("heimdall sandbox: active", "info");
+		});
+	});
+
+	describe("config migration (paths/mode → filesystem)", () => {
+		let tmpDir: string;
 
 		beforeEach(() => {
-			syntheticDir = join(tmpdir(), `heimdall-test-synthetic-${Date.now()}`);
-			projectDir = join(tmpdir(), `heimdall-test-project-${Date.now()}`);
-			mkdirSync(syntheticDir, { recursive: true });
-			mkdirSync(projectDir, { recursive: true });
+			tmpDir = join(tmpdir(), `heimdall-migration-test-${Date.now()}`);
+			mkdirSync(tmpDir, { recursive: true });
 		});
 
 		afterEach(() => {
-			try {
-				rmSync(syntheticDir, { recursive: true, force: true });
-				rmSync(projectDir, { recursive: true, force: true });
-			} catch {
-				// best effort
-			}
+			rmSync(tmpDir, { recursive: true, force: true });
 		});
 
-		it("starts with tmpfs root and mounts minimal /dev", () => {
-			const args = buildBwrapArgs(normalizeSandboxConfig({ enabled: true }), projectDir, syntheticDir, "echo hello");
-			expect(args[0]).toBe("--tmpfs");
-			expect(args[1]).toBe("/");
-			const devIdx = args.indexOf("--dev");
-			expect(args[devIdx + 1]).toBe("/dev");
+		it("migrates paths/mode to filesystem deny/writable", () => {
+			const configPath = join(tmpDir, "heimdall.json");
+			writeFileSync(configPath, JSON.stringify({
+					sandbox: {
+						enabled: true,
+						paths: {
+							"~/github": { mode: "write" },
+							"~/.ssh": { mode: "deny" },
+							"~/Private": { mode: "deny" },
+						},
+					},
+				}, null, 2));
+
+			const config = normalizeSandboxConfig(
+				{ enabled: true, paths: { "~/github": { mode: "write" }, "~/.ssh": { mode: "deny" }, "~/Private": { mode: "deny" } } },
+				configPath,
+			);
+
+			expect(config.policy.filesystem?.deny).toEqual(expect.arrayContaining(["~/.ssh", "~/Private", "~/.aws"]));
+			expect(config.policy.filesystem?.writable).toEqual(["~/github"]);
+
+			// Config file was rewritten
+			const rewritten = JSON.parse(readFileSync(configPath, "utf-8"));
+			expect(rewritten.sandbox.filesystem).toEqual({
+				deny: ["~/.ssh", "~/Private"],
+				writable: ["~/github"],
+			});
+			expect(rewritten.sandbox.paths).toBeUndefined();
 		});
 
-		it("mounts default system prefixes read-only when present", () => {
-			const args = buildBwrapArgs(normalizeSandboxConfig({ enabled: true }), projectDir, syntheticDir, "echo hello");
-			for (const sysPath of ["/usr", "/opt", "/srv", "/etc", "/nix/store", "/run/current-system/sw"]) {
-				if (existsSync(sysPath)) {
-					expect(args).toContain("--ro-bind");
-					expect(args).toContain(sysPath);
-				}
-			}
-		});
-
-		it("mounts prefix entries as read-only by default", () => {
-			const readDir = join(projectDir, "docs");
-			mkdirSync(readDir);
-			const config = normalizeSandboxConfig({ enabled: true, paths: { "./docs": {} } });
-			const args = buildBwrapArgs(config, projectDir, syntheticDir, "echo hello");
-			expect(args).toContain("--ro-bind");
-			expect(args).toContain(readDir);
-		});
-
-		it("mounts write mode entries writable", () => {
-			const srcDir = join(projectDir, "src");
-			mkdirSync(srcDir);
-			const config = normalizeSandboxConfig({ enabled: true, paths: { "./src": { mode: "write" } } });
-			const args = buildBwrapArgs(config, projectDir, syntheticDir, "echo hello");
-			expect(args).toContain("--bind");
-			expect(args).toContain(srcDir);
-		});
-
-		it("mounts specific path entries read-only under their prefix", () => {
-			const config = normalizeSandboxConfig({ enabled: true, paths: { "/etc": [{ path: "/etc/hosts" }] } });
-			const args = buildBwrapArgs(config, projectDir, syntheticDir, "echo hello");
-			if (existsSync("/etc/hosts")) {
-				expect(args).toContain("--ro-bind");
-				expect(args).toContain("/etc/hosts");
-			}
-		});
-
-		it("creates synthetic files for content entries", () => {
+		it("does not migrate when filesystem is already present", () => {
 			const config = normalizeSandboxConfig({
 				enabled: true,
-				paths: { "/etc": [{ path: "/etc/passwd", content: "nobody\n" }] },
+				paths: { "~/old": { mode: "deny" } },
+				filesystem: { deny: ["~/new"], writable: ["."] },
 			});
-			const args = buildBwrapArgs(config, projectDir, syntheticDir, "echo hello");
-			const sourceIdx = args.indexOf("/etc/passwd") - 1;
-			const syntheticFile = args[sourceIdx];
-			expect(readFileSync(syntheticFile, "utf8")).toBe("nobody\n");
-			expect(args).toContain("/etc/passwd");
+
+			expect(config.policy.filesystem?.deny).toEqual(expect.arrayContaining(["~/new", "~/.ssh"]));
+			expect(config.policy.filesystem?.writable).toEqual(["."]);
 		});
 
-		it("resolves '.' to cwd", () => {
-			const config = normalizeSandboxConfig({ enabled: true, paths: { ".": { mode: "write" } } });
-			const args = buildBwrapArgs(config, projectDir, syntheticDir, "echo hello");
-			const bindIdx = args.indexOf("--bind");
-			expect(args[bindIdx + 1]).toBe(projectDir);
-			expect(args[bindIdx + 2]).toBe(projectDir);
+		it("ignores read mode entries in migration", () => {
+			const config = normalizeSandboxConfig({
+				enabled: true,
+				paths: {
+					"~/github": { mode: "read" },
+					"~/Private": { mode: "deny" },
+				},
+			});
+
+			expect(config.policy.filesystem?.deny).toEqual(expect.arrayContaining(["~/Private"]));
+			expect(config.policy.filesystem?.deny).not.toContain("~/github");
+			expect(config.policy.filesystem?.writable).toBeUndefined();
+		});
+	});
+
+	describe("host tool enforcement (tool_call)", () => {
+		it("blocks read of denied paths", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { deny: ["~/Private"] } },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("read", { path: "~/Private/secret.txt" });
+			expect(result).toEqual({ block: true, reason: expect.stringContaining("denied") });
 		});
 
-		it("supports network isolation", () => {
-			const config = normalizeSandboxConfig({ enabled: true, network: "none" });
-			const args = buildBwrapArgs(config, projectDir, syntheticDir, "echo hello");
-			expect(args).toContain("--unshare-net");
+		it("blocks read of default private paths even without explicit config", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("read", { path: join(homedir(), ".ssh/id_rsa") });
+			expect(result).toEqual({ block: true, reason: expect.stringContaining("denied") });
 		});
 
-		it("keeps host network by default", () => {
-			const args = buildBwrapArgs(normalizeSandboxConfig({ enabled: true }), projectDir, syntheticDir, "echo hello");
-			expect(args).not.toContain("--unshare-net");
+		it("allows read of non-denied paths", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { writable: ["."] } },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("read", { path: "./src/index.ts" });
+			expect(result).toBeUndefined();
 		});
 
-		it("ends with the command", () => {
-			const args = buildBwrapArgs(normalizeSandboxConfig({ enabled: true }), projectDir, syntheticDir, "npm test");
-			const sepIdx = args.indexOf("--");
-			expect(args[sepIdx + 1]).toBe("bash");
-			expect(args[sepIdx + 2]).toBe("-c");
-			expect(args[sepIdx + 3]).toBe("npm test");
+		it("blocks write when no writable policy is set (read-only default)", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("write", { path: "./src/index.ts" });
+			expect(result).toEqual({ block: true, reason: expect.stringContaining("denied") });
 		});
 
-		it("skips non-existent paths", () => {
-			const config = normalizeSandboxConfig({ enabled: true, paths: { "/definitely/does/not/exist": {} } });
-			const args = buildBwrapArgs(config, projectDir, syntheticDir, "echo hello");
-			expect(args).not.toContain("/definitely/does/not/exist");
+		it("allows write to writable paths", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { writable: ["."] } },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("write", { path: "./src/index.ts" });
+			expect(result).toBeUndefined();
+		});
+
+		it("blocks write to non-writable paths", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { writable: ["./src"] } },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("write", { path: "./README.md" });
+			expect(result).toEqual({ block: true, reason: expect.stringContaining("denied") });
+		});
+
+		it("blocks edit of non-writable paths", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { writable: ["./src"] } },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("edit", { path: "./README.md" });
+			expect(result).toEqual({ block: true, reason: expect.stringContaining("denied") });
+		});
+
+		it("allows edit to writable paths", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { writable: ["."] } },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("edit", { path: "./src/index.ts" });
+			expect(result).toBeUndefined();
+		});
+
+		it("deny takes precedence over writable", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { writable: ["."], deny: ["./secrets"] } },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("write", { path: "./secrets/key.pem" });
+			expect(result).toEqual({ block: true, reason: expect.stringContaining("denied") });
+		});
+
+		it("does not block when sandbox is disabled", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: false },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("write", { path: "./anywhere" });
+			expect(result).toBeUndefined();
+		});
+
+		it("blocks gitignore glob patterns", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { deny: ["**/.env*"] } },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("read", { path: "./.env.production" });
+			expect(result).toEqual({ block: true, reason: expect.stringContaining("denied") });
+		});
+
+		it("supports gitignore negation patterns", async () => {
+			const harness = createPiHarness(false);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { deny: ["**/.env*", "!**/.env.example"] } },
+			}));
+			await harness.emitSessionStart();
+
+			const blocked = await harness.emitToolCall("read", { path: "./.env.production" });
+			expect(blocked).toEqual({ block: true, reason: expect.stringContaining("denied") });
+
+			const allowed = await harness.emitToolCall("read", { path: "./.env.example" });
+			expect(allowed).toBeUndefined();
+		});
+	});
+
+	describe("fragment files (.heimdall-deny / .heimdall-write)", () => {
+		let tmpDir: string;
+
+		beforeEach(() => {
+			tmpDir = join(tmpdir(), `heimdall-fragment-test-${Date.now()}`);
+			mkdirSync(tmpDir, { recursive: true });
+		});
+
+		afterEach(() => {
+			rmSync(tmpDir, { recursive: true, force: true });
+		});
+
+		it("reads .heimdall-deny from cwd and denies matching paths", async () => {
+			writeFileSync(join(tmpDir, ".heimdall-deny"), "secret.txt\nanother-secret/**\n");
+			const harness = createPiHarness(false, tmpDir);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { writable: ["."] } },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("read", { path: join(tmpDir, "secret.txt") });
+			expect(result).toEqual({ block: true, reason: expect.stringContaining("denied") });
+		});
+
+		it("reads .heimdall-write from cwd and grants write access", async () => {
+			writeFileSync(join(tmpDir, ".heimdall-write"), "src/**\n");
+			const harness = createPiHarness(false, tmpDir);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true },
+			}));
+			await harness.emitSessionStart();
+
+			const allowed = await harness.emitToolCall("write", { path: join(tmpDir, "src/index.ts") });
+			expect(allowed).toBeUndefined();
+
+			const blocked = await harness.emitToolCall("write", { path: join(tmpDir, "README.md") });
+			expect(blocked).toEqual({ block: true, reason: expect.stringContaining("denied") });
+		});
+
+		it("ignores comments and blank lines in fragment files", async () => {
+			writeFileSync(join(tmpDir, ".heimdall-deny"), "# comment\n\nsecret.txt\n");
+			const harness = createPiHarness(false, tmpDir);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { writable: ["."] } },
+			}));
+			await harness.emitSessionStart();
+
+			const result = await harness.emitToolCall("read", { path: join(tmpDir, "secret.txt") });
+			expect(result).toEqual({ block: true, reason: expect.stringContaining("denied") });
+		});
+
+		it("picks up changes to fragment files between tool calls", async () => {
+			const harness = createPiHarness(false, tmpDir);
+			registerSandboxGuard(harness.pi, () => ({
+				sandbox: { enabled: true, filesystem: { writable: ["."] } },
+			}));
+			await harness.emitSessionStart();
+
+			// Not denied yet
+			const before = await harness.emitToolCall("read", { path: join(tmpDir, "newly-denied.txt") });
+			expect(before).toBeUndefined();
+
+			// Add a fragment deny
+			writeFileSync(join(tmpDir, ".heimdall-deny"), "newly-denied.txt\n");
+
+			// Now denied
+			const after = await harness.emitToolCall("read", { path: join(tmpDir, "newly-denied.txt") });
+			expect(after).toEqual({ block: true, reason: expect.stringContaining("denied") });
 		});
 	});
 });
+
+function createPiHarness(noSandboxFlag: boolean, cwd?: string) {
+	const handlers = new Map<string, Array<(...args: unknown[]) => unknown>>();
+	const notify = vi.fn();
+	const setStatus = vi.fn();
+	const setWidget = vi.fn();
+	const registerTool = vi.fn();
+	const registerFlag = vi.fn();
+	const registerCommand = vi.fn();
+	const pi = {
+		registerFlag,
+		registerTool,
+		registerCommand,
+		getFlag: vi.fn(() => noSandboxFlag),
+		on: vi.fn((name: string, handler: (...args: unknown[]) => unknown) => {
+			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+		}),
+	} as unknown as ExtensionAPI;
+
+	return {
+		pi,
+		notify,
+		setStatus,
+		setWidget,
+		registerTool,
+		registerFlag,
+		registerCommand,
+		async emitSessionStart() {
+			const sessionHandlers = handlers.get("session_start") ?? [];
+			for (const handler of sessionHandlers) {
+				await handler({}, {
+					cwd: cwd ?? process.cwd(),
+					ui: {
+						notify,
+						setStatus,
+						setWidget,
+						theme: { fg: (_color: string, value: string) => value },
+					},
+				});
+			}
+		},
+		userBash() {
+			const userBashHandlers = handlers.get("user_bash") ?? [];
+			return userBashHandlers.at(-1)?.();
+		},
+		async emitToolCall(toolName: string, input: Record<string, unknown>) {
+			const toolCallHandlers = handlers.get("tool_call") ?? [];
+			for (const handler of toolCallHandlers) {
+				const result = await handler(
+					{ toolName, input, type: toolName },
+					{ hasUI: true, ui: { notify } },
+				);
+				if (result) return result;
+			}
+			return undefined;
+		},
+	};
+}

@@ -17,7 +17,7 @@ to the LLM context.
 
 | Guard | Type | Tool | Blocks / redacts |
 |---|---|---|---|
-| `sandbox-guard` | always-on | `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls` | OS-level filesystem isolation via bubblewrap — only configured paths + system binaries visible, synthetic `/etc`, env var filtering, `$HOME` read-only by default |
+| `sandbox-guard` | always-on | `bash` | Delegates sandboxed bash commands to the native `heimdall-sandbox` runtime using the configured native policy schema |
 | `env-protect` | opt-out | `read` | Reading `.env`, `.env.*`, `.envrc`, `*.env` — except `.env.example`, `.env.sample`, `.env.template`, `.env.dist`, `.env.defaults` |
 | `kubectl-secret-guard` | opt-out | `bash` | `kubectl get secrets`, `kubectl patch ... finalizers`, `kubectl exec` into a pod that dumps env / `/var/run/secrets` / `app.ini` |
 | `sops-secret-guard` | opt-out | `bash` | Any `sops` invocation that would decrypt content: `sops decrypt`, `sops -d`, `sops --decrypt`, `sops exec-env`, `sops exec-file`, `sops edit`, and bare `sops <file>` |
@@ -125,23 +125,25 @@ All guards are enabled by default. Disable individual opt-out guards via the
 
 ## Configuring `sandbox-guard`
 
-`sandbox-guard` provides filesystem isolation for agent tools. Bash commands
-run inside a bubblewrap (bwrap) namespace, and built-in file tools (`read`,
-`write`, `edit`, `grep`, `find`, `ls`) are checked against the same path policy
-before execution. The agent cannot read default private home paths such as
-`~/Private`, `~/.ssh`, `~/.kube`, `~/.aws`, `~/.config`, AI tool configs
-(Claude, Codex, Cursor, Windsurf, Antigravity, Kiro, Augment, Zed, Aider, Gemini,
-Continue, Codeium, OpenAI, Anthropic), editor configs (VS Code, JetBrains,
-Neovim, Vim), cloud/credential directories, and more — unless users explicitly opt
-them in. Other files under
-`$HOME` are mounted read-only by default so users can reference non-sensitive
-home config files.
+`sandbox-guard` delegates sandboxed `bash` commands to the native
+`heimdall-sandbox` runtime. Heimdall keeps only the Pi integration concerns:
+`enabled` turns delegation on/off, `binaryPath` optionally points to the
+native binary, `--no-sandbox` disables it for a session, and each bash
+invocation is wrapped as `heimdall-sandbox exec --policy -` with a per-command
+JSON policy on stdin.
 
-**Requirements:** Linux with `bubblewrap` installed (`apt install bubblewrap`,
-`dnf install bubblewrap`, etc.). With host networking, Heimdall also preserves
-DNS on systems where `/etc/resolv.conf` is a symlink (for example,
-`systemd-resolved`) by bind-mounting only the symlink's real target, not all of
-`/run`.
+Host-side Pi tools such as `read`, `write`, `edit`, `grep`, `find`, and
+`ls` are not constrained by the native process sandbox. Use the other Heimdall
+guards for host-tool secret protection, and configure `heimdall-sandbox` for
+commands run through `bash`.
+
+**Requirements:** an installed `heimdall-sandbox` binary. Heimdall first uses
+`sandbox.binaryPath` when set, then `heimdall-sandbox` on `PATH`. If the default
+binary is missing, Heimdall warns with install guidance and sandboxed commands
+will fail clearly rather than running unsandboxed.
+
+Install options include Homebrew from the casualjim tap, npm install of
+`@casualjim/heimdall-sandbox`, or `npx @casualjim/heimdall-sandbox`.
 
 ### Minimal config
 
@@ -153,113 +155,114 @@ DNS on systems where `/etc/resolv.conf` is a symlink (for example,
 }
 ```
 
-### Full config
+### Native policy config
+
+All fields under `sandbox` except `enabled` and `binaryPath` use the native
+`heimdall-sandbox` policy schema and are copied into the generated per-command
+policy. Runtime-only fields (`cwd`, `command`, and `stdio`) are added by
+Heimdall for each command.
 
 ```json
 {
   "sandbox": {
     "enabled": true,
+    "binaryPath": "/opt/homebrew/bin/heimdall-sandbox",
     "network": "host",
-    "paths": {
-      ".": { "mode": "write" },
-      "~/.pi": { "mode": "write" },
-      "/etc": [
-        { "path": "/etc/resolv.conf" },
-        { "path": "/etc/hosts" },
-        { "path": "/etc/ssl" },
-        {
-          "path": "/etc/passwd",
-          "content": "nobody:x:65534:65534:Nobody:/nonexistent:/usr/sbin/nologin\n"
-        }
-      ]
-    },
+    "proc": "default",
     "env": {
-      "allow": null,
-      "deny": ["*_TOKEN", "*_SECRET", "*_PASSWORD", "AWS_*", "GITHUB_TOKEN"],
-      "set": {
-        "PATH": "/usr/bin:/bin",
-        "NO_COLOR": "1",
-        "AWS_PROFILE": null
+      "deny": ["GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY"]
+    },
+    "filesystem": {
+      "deny": ["**/.env*", "!**/.env.example"],
+      "writable": ["."],
+      "virtual": {
+        "/etc/hosts": "127.0.0.1 localhost\n"
       }
     }
   }
 }
 ```
 
-### Path rules
+For a command like `npm test` from `/repo`, Heimdall sends a policy shaped
+like:
 
-- `paths` keys are prefixes. Keys support `~` (home directory) and `$VAR`/`${VAR}`
-  expansion (e.g. `"~/.config"`, `"$HOME/projects"`).
-- A value can be one entry or an array of entries.
-- An entry without `path` applies to the whole prefix.
-- An entry with `path` applies to that specific file/path under the prefix.
-- `mode` defaults to `"read"`; write access requires `"mode": "write"`.
-- `mode: "deny"` explicitly blocks a subpath of an otherwise allowed prefix.
-  The most specific match wins, so `"~/.ssh": { "mode": "deny" }` blocks
-  `~/.ssh` even when `$HOME` is read-only.
-- `content` creates a synthetic file at `path` for sandboxed bash commands.
-  Direct host `read` of synthetic paths is blocked so it cannot expose the real
-  host file.
+```json
+{
+  "network": "host",
+  "proc": "default",
+  "env": { "deny": ["GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY"] },
+  "filesystem": {
+    "deny": ["**/.env*", "!**/.env.example"],
+    "writable": ["."],
+    "virtual": { "/etc/hosts": "127.0.0.1 localhost\n" }
+  },
+  "cwd": "/repo",
+  "command": ["bash", "-c", "npm test"],
+  "stdio": "piped"
+}
+```
 
-Deny example:
+### Migration from the previous schema
+
+If your config uses any of these fields, update to the native policy fields:
+
+| Previous field | Native replacement |
+|---|---|
+| `paths` entries with `mode: "deny"` | `filesystem.deny` patterns |
+| `paths` entries with `mode: "write"` | `filesystem.writable` patterns |
+| `paths` entries with `content` | `filesystem.virtual` entries |
+| `networkAccess: false` | `network: "none"` |
+| `envAllowlist` / glob allowlists | native `env.allow` exact names |
+| `env.deny` glob patterns | native `env.deny` exact names |
+| `env.set` | set environment outside the sandbox policy |
+| `writableRoots`, `systemPaths`, `etcReal`, `etcSynthetic`, `extraReadPaths` | native `filesystem` policy fields |
+
+Previous config:
 
 ```json
 {
   "sandbox": {
+    "enabled": true,
+    "networkAccess": false,
     "paths": {
-      "$HOME": {},
-      "~/.ssh": { "mode": "deny" },
-      "~/.aws": { "mode": "deny" },
-      "~/.config/gh": { "mode": "deny" }
+      ".": { "mode": "write" },
+      "**/.env*": { "mode": "deny" },
+      "/etc/passwd": { "content": "nobody:x:65534:65534:Nobody:/nonexistent:/usr/sbin/nologin\n" }
+    },
+    "env": {
+      "deny": ["*_TOKEN"],
+      "set": { "NO_COLOR": "1" }
     }
   }
 }
 ```
 
-### Default path visibility
+Native config:
 
-| Path | Access | Notes |
-|---|---|---|
-| `.` (project dir) | read-write | |
-| `/tmp` | read-write | |
-| `~/.pi` | read-write | User's pi config directory. Uses `~` expansion to `$HOME/.pi`. |
-| `~/Private` | denied | User-private files. Exact user/project rules can override. |
-| `~/.ssh`, `~/.gnupg`, `~/.netrc` | denied | Auth keys and credential files. |
-| `~/.aws`, `~/.azure`, `~/.gcloud`, `~/.oci`, `~/.kube` | denied | Cloud and Kubernetes credentials/config. |
-| `~/.docker`, `~/.terraform.d`, `~/.vault-token` | denied | Infrastructure credentials/config. |
-| `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.cargo/credentials.toml` | denied | Package registry credentials. |
-| `~/.sops`, `~/.age`, `~/.password-store` | denied | Secret stores and encryption keys. |
-| `~/.claude`, `~/.codex`, `~/.forge`, `~/.cursor`, `~/.windsurf`, `~/.antigravity`, `~/.kiro`, `~/.augment`, `~/.zed`, `~/.aider`, `~/.gemini`, `~/.continue`, `~/.codeium`, `~/.openai`, `~/.anthropic` | denied | AI coding tools (CLI agents, AI-native IDEs) — API keys commonly stored here. This list is not exhaustive; users should extend it in `.pi/heimdall.json`. |
-| `~/.vscode`, `~/.vscode-server`, `~/.code` | denied | VS Code, VS Code Insiders/OSS editor configs (may contain auth tokens). |
-| `~/.config/JetBrains`, `~/.local/share/JetBrains` | denied | JetBrains IDE configs (modern XDG paths). |
-| `~/.config/nvim`, `~/.local/share/nvim`, `~/.vim`, `~/.viminfo` | denied | Neovim and Vim configs. |
-| `$HOME` | read-only | Added automatically. User/project config can override. |
-| `/usr` | read-only | System binaries |
-| `/opt` | read-only | |
-| `/srv` | read-only | |
-| `/etc` | read-only | Configure specific files via `paths` |
-| `/nix/store` | read-only | NixOS compatibility |
-| `/run/current-system/sw` | read-only | NixOS compatibility |
-| `/bin`, `/sbin`, `/lib`, `/lib64` | read-only | Legacy non-usr-merged compatibility. Skipped on modern distros. |
-
-### Environment rules
-
-- `env.allow` omitted or `null` — **inherits the current environment** (default).
-- `env.allow: []` — starts with no environment variables.
-- `env.deny` removes matching variables and overrides `allow`.
-- `env.set` is applied last. String values set/override variables; `null` unsets them.
-- Exact names and `*` globs are supported for `allow` and `deny`.
-- Default deny patterns: `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_KEY`.
-
-### Network
-
-- `"host"` (default) — shared with host. Agent can reach Docker, internet.
-- `"none"` — isolated network namespace.
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "network": "none",
+    "filesystem": {
+      "writable": ["."],
+      "deny": ["**/.env*"],
+      "virtual": {
+        "/etc/passwd": "nobody:x:65534:65534:Nobody:/nonexistent:/usr/sbin/nologin\n"
+      }
+    },
+    "env": {
+      "deny": ["GITHUB_TOKEN"]
+    }
+  }
+}
+```
 
 ### Session controls
 
 - **Disable for a session:** `pi --no-sandbox`
 - **Check status:** `/sandbox` command in the TUI
+- **Override binary path:** set `sandbox.binaryPath`
 
 ## Configuring `command-policy-guard`
 

@@ -15,8 +15,8 @@ import {
 	isToolCallEventType,
 	isBashToolResult,
 	type ExtensionAPI,
-} from "@mariozechner/pi-coding-agent";
-import type { TextContent, ImageContent } from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-coding-agent";
+import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 

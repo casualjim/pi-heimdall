@@ -19,5 +19,5 @@
     "allowSyntheticDefaultImports": true,
     "noEmit": true
   },
-  "include": ["extensions/**/*.ts"]
+  "include": ["extensions/**/*.ts", "guards/**/*.ts"]
 }
