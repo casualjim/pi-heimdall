@@ -17,6 +17,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import ignore from "ignore";
 import { homedir } from "node:os";
 import { delimiter, join, resolve, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
 	GeneratedSandboxPolicy,
 	HeimdallConfig,
@@ -183,7 +184,7 @@ export function resolveHeimdallSandboxBinary(configuredBinaryPath?: string): San
 		"@casualjim/heimdall-sandbox-linux-arm64",
 	]) {
 		try {
-			const candidate = require.resolve(`${pkg}/bin/heimdall-sandbox`);
+			const candidate = fileURLToPath(import.meta.resolve(`${pkg}/bin/heimdall-sandbox`));
 			if (existsSync(candidate)) return { binaryPath: candidate, found: true, source: "npm" };
 		} catch {
 			// Package not installed on this platform
@@ -347,14 +348,9 @@ export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => 
 		const networkIcon = config.policy.network === "host" ? "↔" : "⊘";
 		const theme = ctx.ui.theme;
 
-		const statusText = [
-			"🛡",
-			`✎${writeCount}`,
-			envIcon,
-			networkIcon,
-		].filter(Boolean).join(" │ ");
-
-		ctx.ui.setWidget("heimdall-sandbox", [statusText], { placement: "belowEditor" });
+		// Only needed for oh-pi's alternate status bar; avoid duplicating the normal Pi status.
+		// const statusText = ["🛡", `✎${writeCount}`, envIcon, networkIcon].filter(Boolean).join(" │ ");
+		// ctx.ui.setWidget("heimdall-sandbox", [statusText], { placement: "belowEditor" });
 
 		ctx.ui.setStatus(
 			"heimdall-sandbox",
