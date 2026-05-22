@@ -32,55 +32,6 @@ export const MISSING_BINARY_MESSAGE =
 	"Install it with Homebrew from the casualjim tap, install @casualjim/heimdall-sandbox with npm, " +
 	"or run via npx @casualjim/heimdall-sandbox. You can also set sandbox.binaryPath.";
 
-const DEFAULT_PRIVATE_PATHS = [
-	"~/Private",
-	"~/.ssh",
-	"~/.config",
-	"~/.aws",
-	"~/.azure",
-	"~/.gcloud",
-	"~/.oci",
-	"~/.kube",
-	"~/.docker",
-	"~/.gnupg",
-	"~/.sops",
-	"~/.age",
-	"~/.password-store",
-	"~/.terraform.d",
-	"~/.vault-token",
-	"~/.netrc",
-	"~/.npmrc",
-	"~/.pypirc",
-	"~/.cargo/credentials",
-	"~/.cargo/credentials.toml",
-	// AI coding tools (CLI agents, AI-native IDEs) — API keys commonly stored here.
-	"~/.claude",
-	"~/.codex",
-	"~/.forge",
-	"~/.cursor",
-	"~/.windsurf",
-	"~/.antigravity",
-	"~/.kiro",
-	"~/.augment",
-	"~/.zed",
-	"~/.aider",
-	"~/.gemini",
-	"~/.continue",
-	"~/.codeium",
-	"~/.openai",
-	"~/.anthropic",
-	// Editor / IDE configs (may contain stored auth tokens)
-	"~/.vscode",
-	"~/.vscode-server",
-	"~/.code",
-	"~/.config/JetBrains",
-	"~/.local/share/JetBrains",
-	"~/.config/nvim",
-	"~/.local/share/nvim",
-	"~/.vim",
-  "~/.viminfo",
-];
-
 interface LegacyPathsConfig {
 	[key: string]: { mode: string };
 }
@@ -135,13 +86,6 @@ export function normalizeSandboxConfig(
 		policy.filesystem = { ...sandbox.filesystem };
 	} else {
 		policy.filesystem = {};
-	}
-
-	// Merge DEFAULT_PRIVATE_PATHS into deny so the sandbox binary enforces them too
-	const configDeny = policy.filesystem.deny ?? [];
-	const defaultsToAdd = DEFAULT_PRIVATE_PATHS.filter((p) => !configDeny.includes(p));
-	if (defaultsToAdd.length > 0) {
-		policy.filesystem.deny = [...configDeny, ...defaultsToAdd];
 	}
 
 	return {
@@ -409,7 +353,7 @@ export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => 
 	}
 
 	function isDenied(filesystem: SandboxFilesystemPolicy | undefined, cwd: string, rawPath: string): boolean {
-		const denyPatterns = [...DEFAULT_PRIVATE_PATHS, ...(filesystem?.deny ?? []), ...loadFragmentFile(cwd, ".heimdall-deny")];
+		const denyPatterns = [...(filesystem?.deny ?? []), ...loadFragmentFile(cwd, ".heimdall-deny")];
 		const expandedPatterns = denyPatterns.map((p) => resolve(cwd, untildify(p)));
 		const target = resolve(cwd, untildify(rawPath));
 
@@ -468,7 +412,7 @@ export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => 
 		const block = (operation: "read" | "write", path: string) => {
 			const reason =
 				`Blocked: ${event.toolName} attempted to ${operation} "${path}" denied by heimdall sandbox filesystem policy. ` +
-				`Adjust .pi/heimdall.json to allow this path.`;
+				`Adjust .pi/heimdall.jsonc to allow this path.`;
 			if (ctx.hasUI) ctx.ui.notify(`heimdall sandbox: blocked ${event.toolName} ${path}`, "warning");
 			return { block: true as const, reason };
 		};

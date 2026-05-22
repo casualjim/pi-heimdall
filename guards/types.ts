@@ -41,6 +41,8 @@ export interface SandboxConfig extends SandboxPolicyFragment {
 	enabled?: boolean;
 	/** Pi-local path to the native heimdall-sandbox binary. Not forwarded to policy. */
 	binaryPath?: string;
+	/** Pi-local toggle for generated default filesystem denies. Not forwarded to policy. */
+	useDefaultFilesystemDeny?: boolean;
 }
 
 export interface GeneratedSandboxPolicy extends SandboxPolicyFragment {

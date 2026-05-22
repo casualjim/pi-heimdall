@@ -107,19 +107,21 @@ prompts, themes, and other extensions enabled. The only disabled piece is the
 
 ## Configuration
 
-Config is loaded from two locations and deep-merged (project overrides user):
+Config files may be JSONC (comments and trailing commas) or legacy JSON. For each level, Heimdall prefers `.jsonc` and falls back to `.json` only when the `.jsonc` file is absent. Levels are deep-merged in this order, so later levels override earlier values and append arrays:
 
-- **User-level**: `~/.pi/agent/heimdall.json`
-- **Project-level**: `<cwd>/.pi/heimdall.json`
+- **Generated defaults**: `~/.pi/agent/heimdall.default.jsonc`
+- **User-level**: `~/.pi/agent/heimdall.jsonc` (fallback: `heimdall.json`)
+- **Project-level**: `<cwd>/.pi/heimdall.jsonc` (fallback: `heimdall.json`)
 
-All guards are enabled by default. Disable individual opt-out guards via the
+Opt-out guards are enabled by default. Native sandbox delegation remains disabled unless `sandbox.enabled` is set to `true`. Disable individual opt-out guards via the
 `disabled` array:
 
-```json
+```jsonc
 {
+  // These guard IDs are opt-out.
   "disabled": ["env-protect", "kubectl-secret-guard"],
   "sandbox": { "enabled": true },
-  "commandPolicies": []
+  "commandPolicies": [],
 }
 ```
 
@@ -157,10 +159,9 @@ Install options include Homebrew from the casualjim tap, npm install of
 
 ### Native policy config
 
-All fields under `sandbox` except `enabled` and `binaryPath` use the native
-`heimdall-sandbox` policy schema and are copied into the generated per-command
-policy. Runtime-only fields (`cwd`, `command`, and `stdio`) are added by
-Heimdall for each command.
+Heimdall refreshes `~/.pi/agent/heimdall.default.jsonc` on startup with visible recommended defaults. The file is generated, may be overwritten, and exists for transparency; put local changes in `heimdall.jsonc` or project config instead. The generated defaults keep `sandbox.enabled` set to `false` and include the recommended private-path `sandbox.filesystem.deny` list.
+
+All fields under `sandbox` except `enabled`, `binaryPath`, and `useDefaultFilesystemDeny` use the native `heimdall-sandbox` policy schema and are copied into the generated per-command policy. Runtime-only fields (`cwd`, `command`, and `stdio`) are added by Heimdall for each command. Set `sandbox.useDefaultFilesystemDeny: false` in user or project config to remove only the generated recommended deny entries while keeping explicit `sandbox.filesystem.deny` entries and `.heimdall-deny` fragments active.
 
 ```json
 {
@@ -263,12 +264,12 @@ Native config:
 - **Disable for a session:** `pi --no-sandbox`
 - **Check status:** `/sandbox` command in the TUI
 - **Override binary path:** set `sandbox.binaryPath`
+- **Disable generated private-path denies:** set `sandbox.useDefaultFilesystemDeny: false`
 
 ## Configuring `command-policy-guard`
 
 `command-policy-guard` reads repo-specific command policies from
-`.pi/heimdall.json` at the project root. If the `commandPolicies` array is
-missing or empty, the guard does nothing.
+`.pi/heimdall.jsonc` (or legacy `.pi/heimdall.json`) at the project root. If the `commandPolicies` array is missing or empty, the guard does nothing.
 
 Example:
 

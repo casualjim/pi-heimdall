@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { spawn } from "node:child_process";
@@ -16,17 +16,17 @@ import {
 
 describe("sandbox-guard", () => {
 	describe("normalizeSandboxConfig", () => {
-		it("defaults to disabled with default private paths in policy", () => {
+		it("defaults to disabled without hidden private paths in policy", () => {
 			const config = normalizeSandboxConfig();
 			expect(config.enabled).toBe(false);
-			expect(config.policy.filesystem?.deny).toContain("~/.ssh");
-			expect(config.policy.filesystem?.deny).toContain("~/.aws");
+			expect(config.policy.filesystem?.deny).toBeUndefined();
 		});
 
-		it("keeps enabled and binaryPath as Pi-local settings outside the native policy", () => {
+		it("keeps Pi-local settings outside the native policy", () => {
 			const config = normalizeSandboxConfig({
 				enabled: false,
 				binaryPath: "/custom/heimdall-sandbox",
+				useDefaultFilesystemDeny: false,
 				network: "host",
 				proc: "default",
 				env: { deny: ["GITHUB_TOKEN"] },
@@ -43,6 +43,7 @@ describe("sandbox-guard", () => {
 			});
 			expect(config.policy).not.toHaveProperty("enabled");
 			expect(config.policy).not.toHaveProperty("binaryPath");
+			expect(config.policy).not.toHaveProperty("useDefaultFilesystemDeny");
 		});
 
 		it("drops legacy POC fields instead of translating or forwarding them", () => {
@@ -61,8 +62,7 @@ describe("sandbox-guard", () => {
 			expect(config.policy).not.toHaveProperty("network");
 			expect(config.policy).not.toHaveProperty("proc");
 			expect(config.policy).not.toHaveProperty("env");
-			// defaults are still merged into filesystem.deny
-			expect(config.policy.filesystem?.deny).toContain("~/.ssh");
+			expect(config.policy.filesystem?.deny).toBeUndefined();
 		});
 	});
 
@@ -85,7 +85,7 @@ describe("sandbox-guard", () => {
 				proc: "default",
 				env: { deny: ["GITHUB_TOKEN"] },
 				filesystem: {
-					deny: expect.arrayContaining(["**/.env*", "!**/.env.example", "~/.ssh"]),
+					deny: ["**/.env*", "!**/.env.example"],
 					writable: ["."],
 					virtual: { "/etc/hosts": "127.0.0.1 localhost\n" },
 				},
@@ -174,7 +174,7 @@ describe("sandbox-guard", () => {
 				});
 				expect(JSON.parse(calls[0]?.stdin ?? "{}")).toMatchObject({
 					network: "none",
-					filesystem: { writable: ["."], deny: expect.arrayContaining(["~/.ssh"]) },
+					filesystem: { writable: ["."] },
 					cwd,
 					command: ["bash", "-c", "echo hi"],
 					stdio: "piped",
@@ -281,7 +281,7 @@ describe("sandbox-guard", () => {
 				configPath,
 			);
 
-			expect(config.policy.filesystem?.deny).toEqual(expect.arrayContaining(["~/.ssh", "~/Private", "~/.aws"]));
+			expect(config.policy.filesystem?.deny).toEqual(["~/.ssh", "~/Private"]);
 			expect(config.policy.filesystem?.writable).toEqual(["~/github"]);
 
 			// Config file was rewritten
@@ -300,7 +300,7 @@ describe("sandbox-guard", () => {
 				filesystem: { deny: ["~/new"], writable: ["."] },
 			});
 
-			expect(config.policy.filesystem?.deny).toEqual(expect.arrayContaining(["~/new", "~/.ssh"]));
+			expect(config.policy.filesystem?.deny).toEqual(["~/new"]);
 			expect(config.policy.filesystem?.writable).toEqual(["."]);
 		});
 
@@ -331,15 +331,15 @@ describe("sandbox-guard", () => {
 			expect(result).toEqual({ block: true, reason: expect.stringContaining("denied") });
 		});
 
-		it("blocks read of default private paths even without explicit config", async () => {
+		it("does not block private paths without explicit config or fragments", async () => {
 			const harness = createPiHarness(false);
 			registerSandboxGuard(harness.pi, () => ({
 				sandbox: { enabled: true },
 			}));
 			await harness.emitSessionStart();
 
-			const result = await harness.emitToolCall("read", { path: join(homedir(), ".ssh/id_rsa") });
-			expect(result).toEqual({ block: true, reason: expect.stringContaining("denied") });
+			const result = await harness.emitToolCall("read", { path: "~/.ssh/id_rsa" });
+			expect(result).toBeUndefined();
 		});
 
 		it("allows read of non-denied paths", async () => {
