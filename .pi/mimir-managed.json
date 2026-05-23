@@ -1,8 +1,8 @@
 {
   "agents": {
-    "planner.md": "f21a5bdadd3a0bfcc970a9581bf5df484547db8e2b4402f78ce88e5f9c5520f3",
-    "reviewer.md": "26854bf07330bb6ab7d312b08edb6a51f6c5577b5767164acf8fc56fbceadb3b",
-    "worker.md": "c568da0968e0a595fb70dc72d5e68db73abba4f8dcc2676e4b72b13fc87ae156"
+    "planner.md": "aa8f0a1c11e5c8eced53e235bfb71cf9a93cc99230af66776ffcc04d52695b3a",
+    "reviewer.md": "ddf5a84dab548f89d88d41a03a3abc4b9edcd13a4752adfbecc80367f2ae9902",
+    "worker.md": "d7071b0270dd543d6548eb440e5331746e791ce6d1372dc15a7ff1296eb55318"
   },
   "openSpecAssets": {
     "openspec/config/review-gated-workflow.md": "fc0221e14ab9dd309a4ef44745f4eeba5d468f2bbbeebcafe3444ad9b1f4312d",
