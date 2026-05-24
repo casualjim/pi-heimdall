@@ -16,6 +16,7 @@ Heimdall SHALL maintain a generated user-level default config file that makes re
 - **WHEN** Heimdall generates the default config
 - **THEN** the generated config SHALL set `sandbox.enabled` to `false`
 - **AND** the generated config SHALL include the recommended private-path entries under `sandbox.filesystem.deny`
+- **AND** the generated config SHALL include `~/.pi` under `sandbox.filesystem.writable`
 
 ### Requirement: JSONC and JSON user/project config loading
 Heimdall SHALL support both JSONC and JSON config files for user and project config levels while generated defaults use JSONC only.

@@ -84,6 +84,7 @@ describe("heimdall config loading", () => {
 		expect(config.sandbox?.enabled).toBe(false);
 		expect(config.sandbox?.useDefaultFilesystemDeny).toBe(true);
 		expect(config.sandbox?.filesystem?.deny).toEqual(DEFAULT_PRIVATE_PATHS);
+		expect(config.sandbox?.filesystem?.writable).toEqual(["~/.pi"]);
 	});
 
 	it("merges generated defaults, user config, and project config in precedence order", () => {

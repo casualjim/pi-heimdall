@@ -1,30 +1,29 @@
 {
   "agents": {
-    "planner.md": "aa8f0a1c11e5c8eced53e235bfb71cf9a93cc99230af66776ffcc04d52695b3a",
-    "reviewer.md": "ddf5a84dab548f89d88d41a03a3abc4b9edcd13a4752adfbecc80367f2ae9902",
-    "worker.md": "d7071b0270dd543d6548eb440e5331746e791ce6d1372dc15a7ff1296eb55318"
+    "planner.md": "b5a4fda92350d9d416e51cf496779dc282a3bccd0ffc32b52535734326eb6d46",
+    "reviewer.md": "b880efee7d63edcf8881179e2402fbad71bbb5f9c5ffd107a38c17b7beb4ce23",
+    "worker.md": "f36361fea81bc833b13dcb98d4797b186b38b994724664f6c09567869f1c9f2d"
   },
   "openSpecAssets": {
-    "openspec/config/review-gated-workflow.md": "fc0221e14ab9dd309a4ef44745f4eeba5d468f2bbbeebcafe3444ad9b1f4312d",
-    "openspec/schemas/review-gated/schema.yaml": "b0d0ee4c4a4c08e99240c53b413ff31dd4bb0939791fea3987a33f18ef1f04ab",
+    "openspec/config/review-gated-workflow.md": "884bd7f15d7ab461bf8c330bdce1f5cb4667a1939b4bc1f7a06c71a498651e11",
+    "openspec/schemas/review-gated/schema.yaml": "3e264a6b6417a282fb7ea1773e574d3a330be1c2b684f4a3c82dfcfddbc108c9",
     "openspec/schemas/review-gated/templates/design.md": "3251f08057d142f6e3c26f65f5f100ab602ee7ce880d5503bfaa45668ba19f59",
-    "openspec/schemas/review-gated/templates/planning-review.md": "0daeb99cb35106592d2403880e45f0da0f789819d539e53d5147e57dc86cc477",
     "openspec/schemas/review-gated/templates/proposal.md": "9c554e0dbe918e3dc745dcc143a999e1d102954d75fb6e51e231c4cba78f06f3",
     "openspec/schemas/review-gated/templates/spec.md": "e025078f238dc6e4df552a1e0a140cf9efce0bbdecbeb9f45837d45ed91dca01",
     "openspec/schemas/review-gated/templates/tasks.md": "b2a6a4c08c15f347a1d8c3e2d43e0c8fb066dc5cc0feb795f47555f176f9c421"
   },
   "skills": {
-    "implement": "9a780ee105afa9088f5f4409de856ff44df716fd028578b9085eeb10749f2f3a",
-    "plan": "1547dce631d403e8f6bcf583475e5df01ae33392a9197f9ef7e7dd2a01d50def",
-    "review-architecture": "8497282b09b15d4086398d1acaa25323224ba8e88020789711c9b3c5b6168d1a",
-    "review-design": "52b4620585a0b8142b63e80fadc8ad8867c9a133803ba03222df7ab7c3be383b",
-    "review-implementation": "6e591b6e607702d1ae9900021208290be3f1b5d54be1609cca55bbfa2411c010",
-    "review-performance": "a994e64246b53f417a696b65ee7609847f2ffaf2ab2989477b24059d741788d8",
-    "review-plan": "dbf2a3a52f920b8e560a21c6ef1035e27f913b01cbe76cb4d1ae5a6a56d57ce0",
-    "review-proposal": "37541afa3d7f396cf595e0280052afcf1f249f6985fe981f7fc0aff7f44825a4",
+    "implement": "d127a59d7afe9c91da2752c85211d000ef88eafbb3b21563b4dd560d62870d41",
+    "plan": "4f4f9923c47a7086767097a834475f18e2ac40a803ee1ae2c394a1885f7b6253",
+    "review-architecture": "7a88a7ff6be8fd4618034d87256acb3647713ce3c57a1310d5e36caa8f4939b7",
+    "review-data-flow": "b4f2347232f4229dc9653a5a7e0f1757ca2dd8d6aeca069e0a0eb3c77e1a1b5e",
+    "review-design": "b053bc1d60e0f3d86b65c33aa1a3247d6876ae047376680609eccc1d770a3018",
+    "review-implementation": "ab7eb615e6cffb076f2382d55f298b1e2a8d2db26d36917601327ddd8abe078d",
+    "review-plan": "eb7e572d40f8c40fd44591a83eee2ae71dd8319a4d50fa13a27c9fcb9a21b070",
+    "review-proposal": "2f187a412e947e7ef9c0788414c07fd994a376c3128e10a12372314f4a94e420",
     "review-security": "584e14f5a2fbf6fe8022c689dc5a445126f173fac999166a5875fececcbeb3d7",
-    "review-specs": "af0c8abd2188d6d4befec57e50cbee41c4d8852457117ab48c730984b9b5fb11",
-    "review-tasks": "9dcbeb08b989b032c06fe6c45df0831df632e29ad068e38af04e410f8ca96a54",
-    "review-tests": "7fcb1e5c0a6cfd893845de900dc7d07b720b2f5116269ced164f54a6dd3c2ce3"
+    "review-specs": "93ad46929a59e9ce0f9790163bce3ffcd62978968bf1786212703d195d990d8f",
+    "review-tasks": "4d179c295d86997e54d5b2fc9f87af8ec91bf6f08acb054dc86c1f8d8e74f564",
+    "review-tests": "e49c7b277d27b698997e3525293a37271f0dc803eb73a017fd0a05dfd8bb1136"
   }
 }
