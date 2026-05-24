@@ -23,3 +23,4 @@ dist/
 .pi/npm/
 SANDBOX-PLAN.md
 research_codex-sandbox-architecture_20260503.md
+fnox.toml
