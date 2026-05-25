@@ -20,9 +20,15 @@ import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-type SecretValues = Record<string, string>;
+export type SecretValues = Record<string, string>;
 
-const REDACTED = "[REDACTED]";
+export interface SecretGuardState {
+	secretKeys: string[];
+	secretValues: SecretValues;
+	keyPattern: RegExp | null;
+}
+
+export const REDACTED = "[REDACTED]";
 
 function escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -83,7 +89,7 @@ function containsSecretInHex(output: string, secretValues: SecretValues): boolea
 	return false;
 }
 
-function redactOutput(output: string, secretValues: SecretValues): string {
+export function redactOutput(output: string, secretValues: SecretValues): string {
 	const decoded = extractDecodedText(output);
 	if (decoded) {
 		for (const [key, value] of Object.entries(secretValues)) {
@@ -125,68 +131,84 @@ function redactOutput(output: string, secretValues: SecretValues): string {
 	return result;
 }
 
-export function registerSecretGuard(pi: ExtensionAPI, disabledSet: Set<string>): void {
-	let secretKeys: string[] = [];
-	let secretValues: SecretValues = {};
-	let keyPattern: RegExp | null = null;
+export async function loadSecretGuardState(cwd: string): Promise<SecretGuardState> {
+	const state: SecretGuardState = {
+		secretKeys: [],
+		secretValues: {},
+		keyPattern: null,
+	};
 
-	async function loadEnvJson(cwd: string): Promise<void> {
-		secretKeys = [];
-		secretValues = {};
-		keyPattern = null;
+	const envPath = join(cwd, ".env.json");
+	let parsed: Record<string, unknown>;
+	try {
+		const raw = await readFile(envPath, "utf8");
+		parsed = JSON.parse(raw) as Record<string, unknown>;
+	} catch {
+		return state;
+	}
 
-		const envPath = join(cwd, ".env.json");
-		let parsed: Record<string, unknown>;
-		try {
-			const raw = await readFile(envPath, "utf8");
-			parsed = JSON.parse(raw) as Record<string, unknown>;
-		} catch {
-			return;
-		}
+	if (!parsed || typeof parsed !== "object") return state;
 
-		if (!parsed || typeof parsed !== "object") return;
-
-		secretKeys = Object.keys(parsed).filter((k) => k !== "sops");
-		for (const key of secretKeys) {
-			const val = process.env[key];
-			if (typeof val === "string" && val.length > 0) {
-				secretValues[key] = val;
-			}
-		}
-
-		if (secretKeys.length > 0) {
-			const escaped = secretKeys.map(escapeRegex);
-			keyPattern = new RegExp(`\\b(?:${escaped.join("|")})\\b`, "i");
+	state.secretKeys = Object.keys(parsed).filter((key) => key !== "sops");
+	for (const key of state.secretKeys) {
+		const value = process.env[key];
+		if (typeof value === "string" && value.length > 0) {
+			state.secretValues[key] = value;
 		}
 	}
 
+	if (state.secretKeys.length > 0) {
+		const escaped = state.secretKeys.map(escapeRegex);
+		state.keyPattern = new RegExp(`\\b(?:${escaped.join("|")})\\b`, "i");
+	}
+
+	return state;
+}
+
+export function getSecretReference(command: string, state: SecretGuardState): string | null {
+	if (!state.keyPattern) return null;
+	const match = command.match(state.keyPattern);
+	return match?.[0] ?? null;
+}
+
+export function getSecretGuardBlockReason(secretName: string): string {
+	return (
+		`Blocked: command references secret "${secretName}". ` +
+		`This is protected by pi-heimdall/secret-guard based on .env.json. ` +
+		`Ask the user to run this command directly in their terminal if needed. ` +
+		`Never attempt to bypass this protection or ask the user to disable it.`
+	);
+}
+
+export function registerSecretGuard(pi: ExtensionAPI, disabledSet: Set<string>): void {
+	let state: SecretGuardState = {
+		secretKeys: [],
+		secretValues: {},
+		keyPattern: null,
+	};
+
 	pi.on("session_start", async (_event, ctx) => {
 		if (disabledSet.has("secret-guard")) return;
-		await loadEnvJson(ctx.cwd);
+		state = await loadSecretGuardState(ctx.cwd);
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (disabledSet.has("secret-guard")) return undefined;
 		if (!isToolCallEventType("bash", event)) return undefined;
-		if (!keyPattern) return undefined;
 
 		const command = event.input.command;
 		if (typeof command !== "string") return undefined;
 
-		const match = command.match(keyPattern);
-		if (!match) return undefined;
+		const secretName = getSecretReference(command, state);
+		if (!secretName) return undefined;
 
 		if (ctx.hasUI) {
-			ctx.ui.notify(`heimdall: blocked bash referencing secret "${match[0]}"`, "warning");
+			ctx.ui.notify(`heimdall: blocked bash referencing secret "${secretName}"`, "warning");
 		}
 
 		return {
 			block: true,
-			reason:
-				`Blocked: command references secret "${match[0]}". ` +
-				`This is protected by pi-heimdall/secret-guard based on .env.json. ` +
-				`Ask the user to run this command directly in their terminal if needed. ` +
-				`Never attempt to bypass this protection or ask the user to disable it.`,
+			reason: getSecretGuardBlockReason(secretName),
 		};
 	});
 
@@ -194,14 +216,12 @@ export function registerSecretGuard(pi: ExtensionAPI, disabledSet: Set<string>):
 		if (disabledSet.has("secret-guard")) return undefined;
 		if (!isBashToolResult(event)) return undefined;
 
-		const hasValues = Object.keys(secretValues).length > 0;
-
 		let changed = false;
 		const newContent: (TextContent | ImageContent)[] = event.content.map((part) => {
 			if (part.type !== "text") return part;
 			if (typeof part.text !== "string") return part;
 
-			const next = redactOutput(part.text, hasValues ? secretValues : {});
+			const next = redactOutput(part.text, state.secretValues);
 			if (next === part.text) return part;
 
 			changed = true;

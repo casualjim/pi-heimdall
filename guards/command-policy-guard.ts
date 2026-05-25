@@ -159,6 +159,16 @@ export function checkCommand(command: string, policies: CommandPolicy[]): Comman
 	return null;
 }
 
+export function getCommandPolicyBlockReason(policy: CommandPolicy): string {
+	return (
+		`Blocked: command violates repo policy "${policy.name}".\n` +
+		`${policy.message}\n` +
+		`This is protected by pi-heimdall/command-policy-guard. ` +
+		`Ask the user to run this command directly in their terminal if needed. ` +
+		`Never attempt to bypass this protection or ask the user to disable it.`
+	);
+}
+
 export function registerCommandPolicyGuard(pi: ExtensionAPI, getConfig: () => HeimdallConfig, disabledSet: Set<string>): void {
 	let policies: CommandPolicy[] = [];
 
@@ -178,12 +188,7 @@ export function registerCommandPolicyGuard(pi: ExtensionAPI, getConfig: () => He
 
 		const policy = checkCommand(command, policies);
 		if (policy) {
-			const reason =
-				`Blocked: command violates repo policy "${policy.name}".\n` +
-				`${policy.message}\n` +
-				`This is protected by pi-heimdall/command-policy-guard. ` +
-				`Ask the user to run this command directly in their terminal if needed. ` +
-				`Never attempt to bypass this protection or ask the user to disable it.`;
+			const reason = getCommandPolicyBlockReason(policy);
 
 			if (ctx.hasUI) {
 				ctx.ui.notify(`heimdall: blocked policy violation (${policy.name})`, "warning");

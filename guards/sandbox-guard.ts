@@ -151,19 +151,88 @@ export function findHeimdallSandboxBinary(): string {
 	return resolveHeimdallSandboxBinary().binaryPath;
 }
 
-type SpawnLike = typeof spawn;
+export type SpawnLike = typeof spawn;
 
-function killProcessGroup(child: ChildProcessWithoutNullStreams): void {
+const NO_SANDBOX_FLAG_SYMBOL = Symbol.for("pi-heimdall.no-sandbox-flag");
+
+export function ensureNoSandboxFlag(pi: ExtensionAPI): void {
+	const installedPi = pi as unknown as Record<PropertyKey, unknown>;
+	if (installedPi[NO_SANDBOX_FLAG_SYMBOL]) return;
+	installedPi[NO_SANDBOX_FLAG_SYMBOL] = true;
+	pi.registerFlag("no-sandbox", {
+		description: "Disable native heimdall-sandbox delegation for bash commands",
+		type: "boolean",
+		default: false,
+	});
+}
+
+export function terminateSandboxProcessGroup(
+	child: ChildProcessWithoutNullStreams,
+	signal: NodeJS.Signals = "SIGTERM",
+): void {
 	if (!child.pid) {
-		child.kill("SIGKILL");
+		child.kill(signal);
 		return;
 	}
 
 	try {
-		process.kill(-child.pid, "SIGKILL");
+		process.kill(-child.pid, signal);
 	} catch {
-		child.kill("SIGKILL");
+		child.kill(signal);
 	}
+}
+
+export interface SandboxLaunchResult {
+	binaryPath: string;
+	child: ChildProcessWithoutNullStreams;
+	cwd: string;
+	policy: GeneratedSandboxPolicy;
+	policyJson: string;
+}
+
+export async function launchSandboxProcess(
+	config: NormalizedSandboxConfig,
+	command: string,
+	options: { cwd: string; binaryPath?: string; spawnFn?: SpawnLike; env?: NodeJS.ProcessEnv } = { cwd: process.cwd() },
+): Promise<SandboxLaunchResult> {
+	const binaryPath = options.binaryPath ?? findHeimdallSandboxBinary();
+	const spawnFn = options.spawnFn ?? spawn;
+	const workDir = options.cwd;
+	if (!existsSync(workDir)) {
+		throw new Error(`Working directory does not exist: ${workDir}`);
+	}
+
+	const policy = buildSandboxPolicy(config, workDir, command);
+	const policyJson = `${JSON.stringify(policy)}\n`;
+	const child = spawnFn(binaryPath, ["exec", "--policy", "-"], {
+		cwd: workDir,
+		env: options.env ?? process.env,
+		detached: true,
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+
+	await new Promise<void>((resolve, reject) => {
+		let settled = false;
+		const onError = (err: Error) => {
+			if (settled) return;
+			settled = true;
+			child.removeListener("spawn", onSpawn);
+			reject(new Error(
+				`Failed to launch heimdall-sandbox at ${JSON.stringify(binaryPath)}: ${err.message}`,
+			));
+		};
+		const onSpawn = () => {
+			if (settled) return;
+			settled = true;
+			child.removeListener("error", onError);
+			resolve();
+		};
+		child.once("error", onError);
+		child.once("spawn", onSpawn);
+		queueMicrotask(onSpawn);
+	});
+
+	return { binaryPath, child, cwd: workDir, policy, policyJson };
 }
 
 export function createSandboxedBashOps(
@@ -171,18 +240,15 @@ export function createSandboxedBashOps(
 	defaultCwd: string,
 	options: { binaryPath?: string; spawnFn?: SpawnLike } = {},
 ): BashOperations {
-	const binaryPath = options.binaryPath ?? findHeimdallSandboxBinary();
-	const spawnFn = options.spawnFn ?? spawn;
-
 	return {
 		async exec(command, execCwd, { onData, signal, timeout, env }) {
 			const workDir = execCwd || defaultCwd;
-			if (!existsSync(workDir)) {
-				throw new Error(`Working directory does not exist: ${workDir}`);
-			}
-
-			const policy = buildSandboxPolicy(config, workDir, command);
-			const policyJson = `${JSON.stringify(policy)}\n`;
+			const { child, policyJson } = await launchSandboxProcess(config, command, {
+				binaryPath: options.binaryPath,
+				cwd: workDir,
+				env,
+				spawnFn: options.spawnFn,
+			});
 
 			return await new Promise((resolve, reject) => {
 				let settled = false;
@@ -197,35 +263,22 @@ export function createSandboxedBashOps(
 					resolve({ exitCode });
 				};
 
-				const child = spawnFn(binaryPath, ["exec", "--policy", "-"], {
-					cwd: workDir,
-					env: env ?? process.env,
-					detached: true,
-					stdio: ["pipe", "pipe", "pipe"],
-				});
-
 				let timedOut = false;
 				let timeoutHandle: NodeJS.Timeout | undefined;
 
 				if (timeout !== undefined && timeout > 0) {
 					timeoutHandle = setTimeout(() => {
 						timedOut = true;
-						killProcessGroup(child);
+						terminateSandboxProcessGroup(child, "SIGKILL");
 					}, timeout * 1000);
 				}
 
 				child.stdout.on("data", onData);
 				child.stderr.on("data", onData);
-
-				child.on("error", (err) => {
-					if (timeoutHandle) clearTimeout(timeoutHandle);
-					settleReject(new Error(
-						`Failed to launch heimdall-sandbox at ${JSON.stringify(binaryPath)}: ${err.message}`,
-					));
-				});
+				child.stdin.end(policyJson);
 
 				const onAbort = () => {
-					killProcessGroup(child);
+					terminateSandboxProcessGroup(child, "SIGKILL");
 				};
 
 				signal?.addEventListener("abort", onAbort, { once: true });
@@ -242,8 +295,6 @@ export function createSandboxedBashOps(
 						settleResolve(code);
 					}
 				});
-
-				child.stdin.end(policyJson);
 			});
 		},
 	};
@@ -254,11 +305,7 @@ export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => 
 	let sandboxCwd = process.cwd();
 	let sandboxBinary = resolveHeimdallSandboxBinary().binaryPath;
 
-	pi.registerFlag("no-sandbox", {
-		description: "Disable native heimdall-sandbox delegation for bash commands",
-		type: "boolean",
-		default: false,
-	});
+	ensureNoSandboxFlag(pi);
 
 	pi.on("session_start", async (_event, ctx) => {
 		sandboxCwd = ctx.cwd;

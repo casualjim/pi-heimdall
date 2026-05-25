@@ -19,5 +19,5 @@
     "allowSyntheticDefaultImports": true,
     "noEmit": true
   },
-  "include": ["extensions/**/*.ts", "guards/**/*.ts"]
+  "include": ["background-tasks/**/*.ts", "extensions/**/*.ts", "guards/**/*.ts", "lib/**/*.ts"]
 }

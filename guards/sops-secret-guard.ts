@@ -27,6 +27,16 @@ export const SOPS_DECRYPT = new RegExp(
 	"m",
 );
 
+export function getSopsBlockReason(command: string): string | null {
+	if (!SOPS_DECRYPT.test(command)) return null;
+	return (
+		`Blocked: command would decrypt secrets via sops. ` +
+		`This is protected by pi-heimdall/sops-secret-guard. ` +
+		`Ask the user to run this command directly in their terminal if needed. ` +
+		`Never attempt to bypass this protection or ask the user to disable it.`
+	);
+}
+
 export function registerSopsSecretGuard(pi: ExtensionAPI, disabledSet: Set<string>): void {
 	pi.on("tool_call", async (event, ctx) => {
 		if (disabledSet.has("sops-secret-guard")) return undefined;
@@ -34,7 +44,8 @@ export function registerSopsSecretGuard(pi: ExtensionAPI, disabledSet: Set<strin
 
 		const command = event.input.command;
 		if (typeof command !== "string") return undefined;
-		if (!SOPS_DECRYPT.test(command)) return undefined;
+		const reason = getSopsBlockReason(command);
+		if (!reason) return undefined;
 
 		if (ctx.hasUI) {
 			ctx.ui.notify("heimdall: blocked sops decrypt", "warning");
@@ -42,11 +53,7 @@ export function registerSopsSecretGuard(pi: ExtensionAPI, disabledSet: Set<strin
 
 		return {
 			block: true,
-			reason:
-				`Blocked: command would decrypt secrets via sops. ` +
-				`This is protected by pi-heimdall/sops-secret-guard. ` +
-				`Ask the user to run this command directly in their terminal if needed. ` +
-				`Never attempt to bypass this protection or ask the user to disable it.`,
+			reason,
 		};
 	});
 }
