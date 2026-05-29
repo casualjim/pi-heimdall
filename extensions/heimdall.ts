@@ -12,7 +12,7 @@
  * Config is loaded from three levels and deep-merged (later levels override earlier levels):
  *   - Generated defaults: ~/.pi/agent/heimdall.default.jsonc
  *   - User-level:        ~/.pi/agent/heimdall.jsonc (fallback: .json)
- *   - Project-level:     <cwd>/.pi/heimdall.jsonc (fallback: .json)
+ *   - Project-level:     repo root `.pi/heimdall.jsonc` (fallback: .json)
  *
  * sandbox-guard always runs (when enabled in config).
  * The following guards can be disabled via the `disabled` array:
@@ -21,19 +21,19 @@
  */
 
 import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { HeimdallConfig } from "../guards/types.js";
+import type { HeimdallConfig } from "../lib/types.js";
 import {
 	OPT_OUT_GUARD_IDS,
 	ensureGeneratedDefaultConfig,
 	loadEffectiveConfig,
 } from "../lib/heimdall-config.js";
 
-import { registerSecretGuard } from "../guards/secret-guard.js";
-import { registerCommandPolicyGuard } from "../guards/command-policy-guard.js";
-import { registerEnvProtect } from "../guards/env-protect.js";
-import { registerKubectlSecretGuard } from "../guards/kubectl-secret-guard.js";
-import { registerSopsSecretGuard } from "../guards/sops-secret-guard.js";
-import { registerSandboxGuard } from "../guards/sandbox-guard.js";
+import { registerSecretGuard } from "../lib/guards/secret-guard.js";
+import { registerCommandPolicyGuard } from "../lib/guards/command-policy-guard.js";
+import { registerEnvProtect } from "../lib/guards/env-protect.js";
+import { registerKubectlSecretGuard } from "../lib/guards/kubectl-secret-guard.js";
+import { registerSopsSecretGuard } from "../lib/guards/sops-secret-guard.js";
+import { registerSandboxGuard } from "../lib/guards/sandbox-guard.js";
 
 export default function heimdall(pi: ExtensionAPI) {
 	// Keep generated defaults current as soon as the extension is loaded, not only

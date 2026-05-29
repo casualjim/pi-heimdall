@@ -1,13 +1,13 @@
-import { checkCommand, getCommandPolicyBlockReason } from "./command-policy-guard.js";
-import { getKubectlBlockReason } from "./kubectl-secret-guard.js";
+import { checkCommand, getCommandPolicyBlockReason } from "./guards/command-policy-guard.js";
+import { getKubectlBlockReason } from "./guards/kubectl-secret-guard.js";
 import {
 	getSecretGuardBlockReason,
 	getSecretReference,
 	loadSecretGuardState,
 	redactOutput,
 	type SecretGuardState,
-} from "./secret-guard.js";
-import { getSopsBlockReason } from "./sops-secret-guard.js";
+} from "./guards/secret-guard.js";
+import { getSopsBlockReason } from "./guards/sops-secret-guard.js";
 import type { HeimdallConfig } from "./types.js";
 
 export interface HeimdallPreflightState {

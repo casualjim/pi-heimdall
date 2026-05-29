@@ -7,7 +7,7 @@
 
 import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { parse as shellParse, type ParseEntry } from "shell-quote";
-import type { HeimdallConfig, CommandPolicy } from "./types.js";
+import type { CommandPolicy, HeimdallConfig } from "../types.js";
 
 const COMMAND_SEPARATORS = new Set([";", "&&", "||", "|", "(", ")"]);
 

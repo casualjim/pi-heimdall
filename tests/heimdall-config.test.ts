@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_PRIVATE_PATHS } from "../guards/default-private-paths";
+import { DEFAULT_PRIVATE_PATHS } from "../lib/sandbox/default-private-paths";
 import { defaultConfigText, loadConfigFile, loadEffectiveConfig } from "../lib/heimdall-config";
 
 describe("heimdall config loading", () => {
@@ -56,6 +56,22 @@ describe("heimdall config loading", () => {
 		const { config } = loadEffectiveConfig(agentDir, cwd);
 
 		expect(config.sandbox?.enabled).toBe(true);
+	});
+
+	it("merges legacy JSON project config on top of legacy JSON user config", () => {
+		writeFileSync(join(agentDir, "heimdall.json"), JSON.stringify({
+			sandbox: { enabled: true, network: "host", filesystem: { writable: ["~/user"] } },
+		}));
+		writeFileSync(join(cwd, ".pi", "heimdall.json"), JSON.stringify({
+			sandbox: { network: "none", filesystem: { writable: ["./project"] } },
+		}));
+
+		const { config, projectConfigPath } = loadEffectiveConfig(agentDir, cwd);
+
+		expect(config.sandbox?.enabled).toBe(true);
+		expect(config.sandbox?.network).toBe("none");
+		expect(config.sandbox?.filesystem?.writable).toEqual(["~/.pi", "~/user", "./project"]);
+		expect(projectConfigPath).toBe(join(cwd, ".pi", "heimdall.json"));
 	});
 
 	it("prefers JSONC over JSON at user and project levels", () => {
@@ -117,5 +133,44 @@ describe("heimdall config loading", () => {
 
 		expect(config.sandbox?.useDefaultFilesystemDeny).toBe(false);
 		expect(config.sandbox?.filesystem?.deny).toEqual(["~/.ssh", "~/user", "~/project"]);
+	});
+
+	it("finds project config at repo root from nested cwd", () => {
+		const nestedCwd = join(cwd, "packages", "app");
+		mkdirSync(nestedCwd, { recursive: true });
+		mkdirSync(join(cwd, ".git"), { recursive: true });
+		writeFileSync(join(agentDir, "heimdall.json"), JSON.stringify({
+			sandbox: { enabled: true, network: "host" },
+		}));
+		writeFileSync(join(cwd, ".pi", "heimdall.json"), JSON.stringify({
+			sandbox: { network: "none" },
+		}));
+
+		const { config, projectConfigPath } = loadEffectiveConfig(agentDir, nestedCwd);
+
+		expect(config.sandbox?.enabled).toBe(true);
+		expect(config.sandbox?.network).toBe("none");
+		expect(projectConfigPath).toBe(join(cwd, ".pi", "heimdall.json"));
+	});
+
+	it("does not use parent .pi config outside repo root", () => {
+		const parentRoot = join(tmpDir, "workspace");
+		const repoRoot = join(parentRoot, "repo");
+		const nestedCwd = join(repoRoot, "packages", "app");
+		mkdirSync(join(parentRoot, ".pi"), { recursive: true });
+		mkdirSync(join(repoRoot, ".git"), { recursive: true });
+		mkdirSync(nestedCwd, { recursive: true });
+		writeFileSync(join(agentDir, "heimdall.json"), JSON.stringify({
+			sandbox: { enabled: true, network: "host" },
+		}));
+		writeFileSync(join(parentRoot, ".pi", "heimdall.json"), JSON.stringify({
+			sandbox: { network: "none" },
+		}));
+
+		const { config, projectConfigPath } = loadEffectiveConfig(agentDir, nestedCwd);
+
+		expect(config.sandbox?.enabled).toBe(true);
+		expect(config.sandbox?.network).toBe("host");
+		expect(projectConfigPath).toBeUndefined();
 	});
 });

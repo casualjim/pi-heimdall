@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { BG_OUTPUT_SETTLE_MS } from "../background-tasks/shared";
+import { BG_OUTPUT_SETTLE_MS } from "../lib/background-tasks/shared";
+import { buildSandboxPolicy } from "../lib/sandbox/config";
 
 let mockAgentDir = "";
 let mockBinaryFound = true;
@@ -21,8 +22,8 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	};
 });
 
-vi.mock("../guards/sandbox-guard.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../guards/sandbox-guard")>();
+vi.mock("../lib/sandbox/runtime.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/sandbox/runtime")>();
 	return {
 		...actual,
 		launchSandboxProcess: vi.fn(async (config, command, options) => {
@@ -35,7 +36,7 @@ vi.mock("../guards/sandbox-guard.js", async (importOriginal) => {
 			const child = createFakeChild();
 			createdChildren.push(child);
 			launchCalls.push({ command, cwd: options.cwd });
-			const policy = actual.buildSandboxPolicy(config, options.cwd, command);
+			const policy = buildSandboxPolicy(config, options.cwd, command);
 			return {
 				binaryPath: "/bin/heimdall-sandbox",
 				child,
@@ -78,7 +79,7 @@ describe("background task behaviors", () => {
 
 	it("spawns, lists, logs, stops, clears, and emits output/exit follow-ups", async () => {
 		const harness = createHarness(cwd);
-		const { default: registerBackgroundTasksExtension } = await import("../background-tasks/extension");
+		const { default: registerBackgroundTasksExtension } = await import("../lib/background-tasks/extension");
 		registerBackgroundTasksExtension(harness.pi);
 		await harness.emitSessionStart();
 
@@ -134,7 +135,7 @@ describe("background task behaviors", () => {
 
 	it("supports bg_status pid validation and compatibility actions", async () => {
 		const harness = createHarness(cwd);
-		const { default: registerBackgroundTasksExtension } = await import("../background-tasks/extension");
+		const { default: registerBackgroundTasksExtension } = await import("../lib/background-tasks/extension");
 		registerBackgroundTasksExtension(harness.pi);
 		await harness.emitSessionStart();
 		await harness.executeTool("bg_task", { action: "spawn", command: "echo hi" });
@@ -159,7 +160,7 @@ describe("background task behaviors", () => {
 		mkdirSync(join(disabledConfigCwd, ".pi"), { recursive: true });
 		writeFileSync(join(disabledConfigCwd, ".pi", "heimdall.jsonc"), `{ "sandbox": { "enabled": false } }`);
 
-		const { default: registerBackgroundTasksExtension } = await import("../background-tasks/extension");
+		const { default: registerBackgroundTasksExtension } = await import("../lib/background-tasks/extension");
 
 		const disabledHarness = createHarness(disabledConfigCwd);
 		registerBackgroundTasksExtension(disabledHarness.pi);
@@ -204,7 +205,7 @@ describe("background task behaviors", () => {
 
 	it("truncates visible log tails and cleans up logs on session shutdown", async () => {
 		const harness = createHarness(cwd);
-		const { default: registerBackgroundTasksExtension } = await import("../background-tasks/extension");
+		const { default: registerBackgroundTasksExtension } = await import("../lib/background-tasks/extension");
 		registerBackgroundTasksExtension(harness.pi);
 		await harness.emitSessionStart();
 		const spawnResult = await harness.executeTool("bg_task", { action: "spawn", command: "echo huge" });
@@ -227,7 +228,7 @@ describe("background task behaviors", () => {
 		process.env.MY_SECRET_TOKEN = "top-secret";
 		writeFileSync(join(cwd, ".env.json"), JSON.stringify({ MY_SECRET_TOKEN: "" }));
 		const harness = createHarness(cwd);
-		const { default: registerBackgroundTasksExtension } = await import("../background-tasks/extension");
+		const { default: registerBackgroundTasksExtension } = await import("../lib/background-tasks/extension");
 		registerBackgroundTasksExtension(harness.pi);
 		await harness.emitSessionStart();
 		await harness.executeTool("bg_task", { action: "spawn", command: "echo secret" });
@@ -259,7 +260,7 @@ describe("background task behaviors", () => {
 			commandPolicies: [{ name: "no-cargo-test", blocked: ["cargo", "test"], message: "Use mise test." }],
 		}));
 		const harness = createHarness(cwd);
-		const { default: registerBackgroundTasksExtension } = await import("../background-tasks/extension");
+		const { default: registerBackgroundTasksExtension } = await import("../lib/background-tasks/extension");
 		registerBackgroundTasksExtension(harness.pi);
 		await harness.emitSessionStart();
 

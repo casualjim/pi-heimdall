@@ -40,17 +40,23 @@ import {
 	type BackgroundTaskSnapshot,
 	type BackgroundTaskStatus,
 } from "./shared.js";
-import { loadEffectiveConfig } from "../lib/heimdall-config.js";
-import { getBackgroundCommandBlockReason, loadHeimdallPreflightState, redactBackgroundOutput, type HeimdallPreflightState } from "../guards/preflight.js";
+import { loadEffectiveConfig } from "../heimdall-config.js";
+import {
+	getBackgroundCommandBlockReason,
+	loadHeimdallPreflightState,
+	redactBackgroundOutput,
+	type HeimdallPreflightState,
+} from "../preflight.js";
+import type { HeimdallConfig } from "../types.js";
+import { normalizeSandboxConfig } from "../sandbox/config.js";
 import {
 	ensureNoSandboxFlag,
 	launchSandboxProcess,
-	normalizeSandboxConfig,
 	resolveHeimdallSandboxBinary,
 	terminateSandboxProcessGroup,
 	MISSING_BINARY_MESSAGE,
-} from "../guards/sandbox-guard.js";
-import type { HeimdallConfig, NormalizedSandboxConfig, SandboxConfig } from "../guards/types.js";
+} from "../sandbox/runtime.js";
+import type { NormalizedSandboxConfig, SandboxConfig } from "../sandbox/types.js";
 
 type ManagedTask = BackgroundTaskSnapshot & {
 	child: ChildProcessWithoutNullStreams;

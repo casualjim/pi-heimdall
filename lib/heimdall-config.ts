@@ -1,9 +1,9 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parse, type ParseError } from "jsonc-parser";
-import { DEFAULT_PRIVATE_PATHS } from "../guards/default-private-paths.js";
-import type { HeimdallConfig } from "../guards/types.js";
+import { DEFAULT_PRIVATE_PATHS } from "./sandbox/default-private-paths.js";
+import type { HeimdallConfig } from "./types.js";
 
 export const OPT_OUT_GUARD_IDS = [
 	"secret-guard",
@@ -58,6 +58,21 @@ function preferredConfigPath(dir: string, basename: string): string | undefined 
 	return undefined;
 }
 
+function findRepoRoot(cwd: string): string | undefined {
+	let dir = resolve(cwd);
+	for (;;) {
+		if (existsSync(join(dir, ".git"))) return dir;
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+}
+
+function findProjectConfigPath(cwd: string, basename: string): string | undefined {
+	const repoRoot = findRepoRoot(cwd);
+	return preferredConfigPath(join(repoRoot ?? cwd, ".pi"), basename);
+}
+
 export function loadConfigFile(path: string | undefined): HeimdallConfig | null {
 	if (!path || !existsSync(path)) return null;
 	return parseConfig(readFileSync(path, "utf-8"));
@@ -107,7 +122,7 @@ export function mergeConfigLevels(defaultConfig: HeimdallConfig | null, userConf
 export function loadEffectiveConfig(agentDir: string, cwd: string): { config: HeimdallConfig; defaultConfigPath: string; projectConfigPath: string | undefined } {
 	const defaultConfigPath = ensureGeneratedDefaultConfig(agentDir);
 	const userConfigPath = preferredConfigPath(agentDir, USER_CONFIG_BASENAME);
-	const projectConfigPath = preferredConfigPath(join(cwd, ".pi"), USER_CONFIG_BASENAME);
+	const projectConfigPath = findProjectConfigPath(cwd, USER_CONFIG_BASENAME);
 
 	const defaultConfig = loadConfigFile(defaultConfigPath);
 	const userConfig = loadConfigFile(userConfigPath);

@@ -18,9 +18,7 @@
   },
   "type": "module",
   "files": [
-    "background-tasks/",
     "extensions/",
-    "guards/",
     "lib/",
     "README.md",
     "LICENSE"

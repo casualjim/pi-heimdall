@@ -192,7 +192,7 @@ Config files may be JSONC (comments and trailing commas) or legacy JSON. For eac
 
 - **Generated defaults**: `~/.pi/agent/heimdall.default.jsonc`
 - **User-level**: `~/.pi/agent/heimdall.jsonc` (fallback: `heimdall.json`)
-- **Project-level**: `<cwd>/.pi/heimdall.jsonc` (fallback: `heimdall.json`)
+- **Project-level**: repo root `.pi/heimdall.jsonc` (fallback: `heimdall.json`)
 
 Opt-out guards are enabled by default. Native sandbox delegation remains disabled unless `sandbox.enabled` is set to `true`. Disable individual opt-out guards via the
 `disabled` array:
@@ -350,7 +350,7 @@ Native config:
 ## Configuring `command-policy-guard`
 
 `command-policy-guard` reads repo-specific command policies from
-`.pi/heimdall.jsonc` (or legacy `.pi/heimdall.json`) at the project root. If the `commandPolicies` array is missing or empty, the guard does nothing.
+repo root `.pi/heimdall.jsonc` (or legacy `.pi/heimdall.json`). If `commandPolicies` array missing or empty, guard does nothing.
 
 Example:
 
@@ -464,30 +464,34 @@ the block in real time.
 ## Layout
 
 ```
-background-tasks/
-├── extension.ts
-└── shared.ts
-
 extensions/
 ├── heimdall-bg-tasks.ts # optional background-task entry point
 └── heimdall.ts          # core guard entry point
 
-guards/
-├── command-policy-guard.ts
-├── env-protect.ts
-├── kubectl-secret-guard.ts
-├── preflight.ts
-├── sandbox-guard.ts
-├── secret-guard.ts
-├── sops-secret-guard.ts
-└── types.ts
-
 lib/
-└── heimdall-config.ts
+├── background-tasks/
+│   ├── extension.ts
+│   └── shared.ts
+├── guards/
+│   ├── command-policy-guard.ts
+│   ├── env-protect.ts
+│   ├── kubectl-secret-guard.ts
+│   ├── sandbox-guard.ts
+│   ├── secret-guard.ts
+│   └── sops-secret-guard.ts
+├── sandbox/
+│   ├── config.ts
+│   ├── default-private-paths.ts
+│   ├── filesystem-policy.ts
+│   ├── runtime.ts
+│   └── types.ts
+├── heimdall-config.ts
+├── preflight.ts
+└── types.ts
 ```
 
 The core guard extension and the optional background-task extension share config
-loading plus sandbox/preflight helpers, but keep their runtime state separate.
+loading plus sandbox/preflight helpers from `lib/`, but keep their runtime state separate.
 
 ## Development
 

@@ -5,14 +5,13 @@ import { mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { spawn } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerSandboxGuard } from "../lib/guards/sandbox-guard";
+import { buildSandboxPolicy, normalizeSandboxConfig } from "../lib/sandbox/config";
 import {
 	MISSING_BINARY_MESSAGE,
-	buildSandboxPolicy,
 	createSandboxedBashOps,
-	normalizeSandboxConfig,
-	registerSandboxGuard,
 	resolveHeimdallSandboxBinary,
-} from "../guards/sandbox-guard";
+} from "../lib/sandbox/runtime";
 
 describe("sandbox-guard", () => {
 	describe("normalizeSandboxConfig", () => {

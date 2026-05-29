@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createBackgroundTaskLogFile, getBackgroundTaskLogDir } from "../background-tasks/shared";
+import { createBackgroundTaskLogFile, getBackgroundTaskLogDir } from "../lib/background-tasks/shared";
 
 describe("background task log storage", () => {
 	const createdRoots: string[] = [];
