@@ -8,7 +8,6 @@
  */
 
 import {
-	createBashTool,
 	isToolCallEventType,
 	type BashOperations,
 	type ExtensionAPI,
@@ -18,6 +17,7 @@ import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { HeimdallConfig, NormalizedSandboxConfig, SandboxConfig, SandboxPathEntry } from "./types.js";
+import shellquote from "shell-quote";
 
 const DEFAULT_ENV_DENY = ["*_TOKEN", "*_SECRET", "*_PASSWORD", "*_KEY"];
 
@@ -342,6 +342,7 @@ export function buildBwrapArgs(
 	cwd: string,
 	syntheticDir: string,
 	command: string,
+	env?: Record<string, string>,
 ): string[] {
 	const args: string[] = [];
 	const readPrefixMounts: string[] = [];
@@ -395,6 +396,13 @@ export function buildBwrapArgs(
 
 	for (const { source, target } of dedupeMounts(overlayReadMounts)) {
 		args.push("--ro-bind", source, target);
+	}
+
+	if (env) {
+		args.push("--clearenv");
+		for (const [key, value] of Object.entries(env)) {
+			args.push("--setenv", key, value);
+		}
 	}
 
 	args.push("--unshare-user");
@@ -497,13 +505,12 @@ function createSandboxedBashOps(config: NormalizedSandboxConfig, cwd: string): B
 					throw new Error("bubblewrap (bwrap) not found. Install it to enable sandboxing.");
 				}
 
-				const bwrapArgs = buildBwrapArgs(config, cwd, syntheticDir, command);
 				const cleanEnv = filterEnv(config.env, process.env as Record<string, string>);
+				const bwrapArgs = buildBwrapArgs(config, cwd, syntheticDir, command, cleanEnv);
 
 				return await new Promise((resolve, reject) => {
 					const child = spawn(bwrapPath, bwrapArgs, {
 						cwd: workDir,
-						env: cleanEnv,
 						detached: true,
 						stdio: ["ignore", "pipe", "pipe"],
 					});
@@ -621,30 +628,14 @@ export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => 
 		ctx.ui.notify("heimdall sandbox: active", "info");
 	});
 
-	const localCwd = process.cwd();
-	const localBash = createBashTool(localCwd);
-
-	pi.registerTool({
-		...localBash,
-		label: "bash (heimdall sandbox)",
-		async execute(id, params, signal, onUpdate, _ctx) {
-			if (!sandboxConfig || !bwrapAvailable) {
-				return localBash.execute(id, params, signal, onUpdate);
-			}
-
-			const sandboxedBash = createBashTool(sandboxCwd, {
-				operations: createSandboxedBashOps(sandboxConfig, sandboxCwd),
-			});
-			return sandboxedBash.execute(id, params, signal, onUpdate);
-		},
-	});
-
 	pi.on("user_bash", () => {
 		if (!sandboxConfig || !bwrapAvailable) return undefined;
 		return {
 			operations: createSandboxedBashOps(sandboxConfig, sandboxCwd),
 		};
 	});
+
+	const sandboxToolCleanupIds: Map<string, string> = new Map();
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!sandboxConfig || !sandboxConfig.enabled) return undefined;
@@ -670,7 +661,45 @@ export function registerSandboxGuard(pi: ExtensionAPI, getHeimdallConfig: () => 
 			if (!canWriteSandboxPath(sandboxConfig, sandboxCwd, input.path)) return block("write", input.path);
 		}
 
+		if (isToolCallEventType("bash", event) && bwrapAvailable) {
+			const syntheticDir = join(
+				process.env.TMPDIR || "/tmp",
+				`heimdall-sandbox-${randomUUID()}`,
+			);
+
+			try {
+				mkdirSync(syntheticDir, { recursive: true });
+
+				const bwrapPath = findBwrap();
+
+				if (bwrapPath == null) {
+					throw new Error("bubblewrap (bwrap) not found. Install it to enable sandboxing.");
+				}
+
+				const filteredEnv = filterEnv(sandboxConfig.env, process.env as Record<string, string>);
+				const args = buildBwrapArgs(sandboxConfig, sandboxCwd, syntheticDir, event.input.command, filteredEnv)
+
+				event.input.command = shellquote.quote([
+					bwrapPath,
+					...args
+				]);
+
+				sandboxToolCleanupIds.set(event.toolCallId, syntheticDir);
+			} catch (err) {
+				rmSync(syntheticDir, { recursive: true, force: true });
+
+				return { block: true, reason: "Failed to apply sandbox: " + (err as Error).message };
+			}
+		}
+
 		return undefined;
+	});
+
+	pi.on("tool_execution_end", (event) => {
+		const syntheticDir = sandboxToolCleanupIds.get(event.toolCallId);
+		if (syntheticDir === undefined) return;
+		sandboxToolCleanupIds.delete(event.toolCallId);
+		try { rmSync(syntheticDir, { recursive: true, force: true }); } catch { /* best effort */ }
 	});
 
 	pi.registerCommand("sandbox", {
