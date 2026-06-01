@@ -62,6 +62,9 @@ export function normalizeSandboxConfig(
 	} else {
 		policy.filesystem = {};
 	}
+	if (sandbox.sshAgent !== undefined) policy.sshAgent = sandbox.sshAgent;
+	if (sandbox.gpgAgent !== undefined) policy.gpgAgent = sandbox.gpgAgent;
+	if (sandbox.ageAgent !== undefined) policy.ageAgent = sandbox.ageAgent;
 
 	return {
 		enabled: sandbox.enabled ?? false,

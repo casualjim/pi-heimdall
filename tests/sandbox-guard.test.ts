@@ -30,6 +30,7 @@ describe("sandbox-guard", () => {
 				proc: "default",
 				env: { deny: ["GITHUB_TOKEN"] },
 				filesystem: { writable: ["."] },
+				gpgAgent: true,
 			});
 
 			expect(config.enabled).toBe(false);
@@ -39,6 +40,7 @@ describe("sandbox-guard", () => {
 				proc: "default",
 				env: { deny: ["GITHUB_TOKEN"] },
 				filesystem: { writable: ["."] },
+				gpgAgent: true,
 			});
 			expect(config.policy).not.toHaveProperty("enabled");
 			expect(config.policy).not.toHaveProperty("binaryPath");
@@ -77,6 +79,7 @@ describe("sandbox-guard", () => {
 					writable: ["."],
 					virtual: { "/etc/hosts": "127.0.0.1 localhost\n" },
 				},
+				gpgAgent: true,
 			});
 
 			expect(buildSandboxPolicy(config, "/repo", "npm test")).toMatchObject({
@@ -88,6 +91,7 @@ describe("sandbox-guard", () => {
 					writable: ["."],
 					virtual: { "/etc/hosts": "127.0.0.1 localhost\n" },
 				},
+				gpgAgent: true,
 				cwd: "/repo",
 				command: ["bash", "-c", "npm test"],
 				stdio: "piped",

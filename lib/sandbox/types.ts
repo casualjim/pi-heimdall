@@ -20,6 +20,12 @@ export interface SandboxPolicyFragment {
 	proc?: SandboxProcPolicy;
 	env?: SandboxEnvPolicy;
 	filesystem?: SandboxFilesystemPolicy;
+	/** Mount SSH agent sockets when Linux isolation is used. */
+	sshAgent?: boolean;
+	/** Mount GnuPG agent, keyboxd, and dirmngr sockets when Linux isolation is used. */
+	gpgAgent?: boolean;
+	/** Mount age-compatible agent sockets when Linux isolation is used. */
+	ageAgent?: boolean;
 }
 
 export interface SandboxConfig extends SandboxPolicyFragment {

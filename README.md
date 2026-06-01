@@ -242,7 +242,7 @@ Install options include Homebrew from the casualjim tap, npm install of
 
 Heimdall refreshes `~/.pi/agent/heimdall.default.jsonc` on startup with visible recommended defaults. The file is generated, may be overwritten, and exists for transparency; put local changes in `heimdall.jsonc` or project config instead. The generated defaults keep `sandbox.enabled` set to `false` and include the recommended private-path `sandbox.filesystem.deny` list.
 
-All fields under `sandbox` except `enabled`, `binaryPath`, and `useDefaultFilesystemDeny` use the native `heimdall-sandbox` policy schema and are copied into the generated per-command policy. Runtime-only fields (`cwd`, `command`, and `stdio`) are added by Heimdall for each command. Set `sandbox.useDefaultFilesystemDeny: false` in user or project config to remove only the generated recommended deny entries while keeping explicit `sandbox.filesystem.deny` entries and `.heimdall-deny` fragments active.
+All fields under `sandbox` except `enabled`, `binaryPath`, and `useDefaultFilesystemDeny` use the native `heimdall-sandbox` policy schema and are copied into the generated per-command policy. Runtime-only fields (`cwd`, `command`, and `stdio`) are added by Heimdall for each command. Set `sandbox.useDefaultFilesystemDeny: false` in user or project config to remove only the generated recommended deny entries while keeping explicit `sandbox.filesystem.deny` entries and `.heimdall-deny` fragments active. Host agent socket mounts are opt-in; set `gpgAgent: true` for GnuPG/keyboxd/dirmngr sockets, `sshAgent: true` for `SSH_AUTH_SOCK`, or `ageAgent: true` for age-compatible sockets.
 
 ```json
 {
@@ -251,6 +251,7 @@ All fields under `sandbox` except `enabled`, `binaryPath`, and `useDefaultFilesy
     "binaryPath": "/opt/homebrew/bin/heimdall-sandbox",
     "network": "host",
     "proc": "default",
+    "gpgAgent": true,
     "env": {
       "deny": ["GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY"]
     },
@@ -272,6 +273,7 @@ like:
 {
   "network": "host",
   "proc": "default",
+  "gpgAgent": true,
   "env": { "deny": ["GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY"] },
   "filesystem": {
     "deny": ["**/.env*", "!**/.env.example"],
